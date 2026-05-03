@@ -1,0 +1,18 @@
+{
+    "5fcfdc26bc84536f79bd": {
+        "commit": "64222515138e43da1fcf288f0289ef1020427b87",
+        "syzkaller": "282f03fbbd76ae15c1ed5e934873fbbc47735176",
+        "config": "https://syzkaller.appspot.com//text?tag=KernelConfig&x=61f4d9af07d3bbdf",
+        "syz_repro": "https://syzkaller.appspot.com//text?tag=ReproSyz&x=107ca762b00000",
+        "log": "https://syzkaller.appspot.com//text?tag=CrashLog&x=120317b4b00000",
+        "c_repro": "https://syzkaller.appspot.com//text?tag=ReproC&x=161b79f0b00000",
+        "time": "2021/10/23 06:10",
+        "manager": "ci-upstream-kasan-gce",
+        "report": "https://syzkaller.appspot.com//text?tag=CrashReport&x=1785c952b00000",
+        "vul_offset": 1536,
+        "obj_size": 4096,
+        "host_url": "https://syzkaller.appspot.com/bug?extid=5fcfdc26bc84536f79bd",
+        "title": "\nWARNING: held lock freed in spi_unregister_controller\nspi\nusb\n",
+        "patch": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=6c53b45c71b4920b5e62f0ea8079a1da382b9434"
+    }
+}

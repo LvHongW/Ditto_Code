@@ -1,0 +1,81 @@
+{
+    "keynum": 20,
+    "ngram-min": 2,
+    "ngram-max": 4,
+    "common": [
+        "socket sendmsg",
+        "ioctl ioctl",
+        "openat ioctl",
+        "syz_open_dev ioctl",
+        "socket socket",
+        "socket ioctl",
+        "socket setsockopt",
+        "openat write",
+        "mmap socket",
+        "bpf bpf",
+        "openat ioctl ioctl",
+        "socket bind",
+        "socket syz_genetlink_get_family_id",
+        "syz_mount_image open",
+        "sendmsg socket",
+        "write write",
+        "socket connect",
+        "ioctl ioctl ioctl",
+        "syz_mount_image openat",
+        "syz_genetlink_get_family_id sendmsg",
+        "setsockopt setsockopt",
+        "sendmsg sendmsg",
+        "ioctl sendmsg"
+    ],
+    "common-all": [
+        "socket sendmsg",
+        "ioctl ioctl",
+        "openat ioctl",
+        "syz_open_dev ioctl",
+        "socket socket",
+        "socket ioctl"
+    ],
+    "WARNING": [
+        "getsockname sendmsg"
+    ],
+    "INFO": [
+        "socket ioctl sendmsg",
+        "socket socket ioctl",
+        "socket socket ioctl sendmsg",
+        "syz_io_uring_setup syz_io_uring_submit",
+        "sendmsg socket sendmsg",
+        "socket sendmsg socket sendmsg",
+        "socket sendmsg socket"
+    ],
+    "GPF": [
+        "mmap bpf",
+        "syz_init_net_socket sendmsg",
+        "mkdir mount"
+    ],
+    "BUG": [
+        "bpf bpf bpf",
+        "connect sendmmsg"
+    ],
+    "UAF": [
+        "socket syz_genetlink_get_family_id sendmsg",
+        "syz_usb_connect syz_usb_control_io"
+    ],
+    "OOB": [
+        "add_key add_key",
+        "add_key add_key add_key",
+        "syz_usb_control_io syz_usb_control_io",
+        "mmap socket setsockopt"
+    ],
+    "IF": [
+        "syz_io_uring_setup io_uring_enter",
+        "mmap syz_open_dev",
+        "mmap syz_open_dev ioctl",
+        "mmap socket bind",
+        "io_uring_setup socket io_uring_register",
+        "socket io_uring_register",
+        "io_uring_setup socket",
+        "fsconfig fsconfig",
+        "setsockopt setsockopt setsockopt",
+        "bind setsockopt"
+    ]
+}

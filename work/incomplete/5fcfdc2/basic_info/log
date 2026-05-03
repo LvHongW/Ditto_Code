@@ -1,0 +1,296 @@
+[[0;32m  OK  [0m] Reached target Graphical Interface.
+         Starting Update UTMP about System Runlevel Changes...
+         Starting Load/Save RF Kill Switch Status...
+[[0;32m  OK  [0m] Started Update UTMP about System Runlevel Changes.
+[[0;32m  OK  [0m] Started Load/Save RF Kill Switch Status.
+
+Debian GNU/Linux 9 syzkaller ttyS0
+
+Warning: Permanently added '10.128.1.82' (ECDSA) to the list of known hosts.
+executing program
+syzkaller login: [   72.990837][   T69] usb 1-1: new high-speed USB device number 2 using dummy_hcd
+[   73.230818][   T69] usb 1-1: Using ep0 maxpacket: 32
+[   73.510947][   T69] usb 1-1: New USB device found, idVendor=2040, idProduct=d300, bcdDevice=73.ce
+[   73.520174][   T69] usb 1-1: New USB device strings: Mfr=1, Product=2, SerialNumber=20
+[   73.529058][   T69] usb 1-1: Product: syz
+[   73.533760][   T69] usb 1-1: Manufacturer: syz
+[   73.538389][   T69] usb 1-1: SerialNumber: syz
+[   73.547301][   T69] usb 1-1: config 0 descriptor??
+[   73.621327][   T69] msi2500 1-1:0.0: Registered as swradio16
+[   73.627287][   T69] msi2500 1-1:0.0: SDR API is still slightly experimental and functionality changes may follow
+[   73.797686][ T1275] usb 1-1: USB disconnect, device number 2
+[   73.838495][ T1275] 
+[   73.840848][ T1275] =========================
+[   73.845344][ T1275] WARNING: held lock freed!
+[   73.849841][ T1275] 5.15.0-rc6-syzkaller #0 Not tainted
+[   73.855211][ T1275] -------------------------
+[   73.859711][ T1275] kworker/0:3/1275 is freeing memory ffff888078f7c000-ffff888078f7cfff, with a lock still held there!
+[   73.870972][ T1275] ffff888078f7c668 (&ctlr->add_lock){+.+.}-{3:3}, at: spi_unregister_controller+0x57/0x3b0
+[   73.880979][ T1275] 8 locks held by kworker/0:3/1275:
+[   73.886155][ T1275]  #0: ffff888141583d38 ((wq_completion)usb_hub_wq){+.+.}-{0:0}, at: process_one_work+0x8a3/0x16b0
+[   73.896840][ T1275]  #1: ffffc90004df7db0 ((work_completion)(&hub->events)){+.+.}-{0:0}, at: process_one_work+0x8d7/0x16b0
+[   73.908055][ T1275]  #2: ffff88801e713220 (&dev->mutex){....}-{3:3}, at: hub_event+0x1c1/0x4330
+[   73.916968][ T1275]  #3: ffff88823bd68a20 (&dev->mutex){....}-{3:3}, at: usb_disconnect.cold+0x43/0x78e
+[   73.926544][ T1275]  #4: ffff8881401f71a8 (&dev->mutex){....}-{3:3}, at: device_release_driver+0x1c/0x40
+[   73.936188][ T1275]  #5: ffff888078f7ad38 (&dev->vb_queue_lock){+.+.}-{3:3}, at: msi2500_disconnect+0x5d/0x160
+[   73.946370][ T1275]  #6: ffff888078f7aca8 (&dev->v4l2_lock){+.+.}-{3:3}, at: msi2500_disconnect+0x67/0x160
+[   73.956198][ T1275]  #7: ffff888078f7c668 (&ctlr->add_lock){+.+.}-{3:3}, at: spi_unregister_controller+0x57/0x3b0
+[   73.966637][ T1275] 
+[   73.966637][ T1275] stack backtrace:
+[   73.972508][ T1275] CPU: 0 PID: 1275 Comm: kworker/0:3 Not tainted 5.15.0-rc6-syzkaller #0
+[   73.980911][ T1275] Hardware name: Google Google Compute Engine/Google Compute Engine, BIOS Google 01/01/2011
+[   73.991046][ T1275] Workqueue: usb_hub_wq hub_event
+[   73.996072][ T1275] Call Trace:
+[   73.999347][ T1275]  dump_stack_lvl+0xcd/0x134
+[   74.004019][ T1275]  debug_check_no_locks_freed.cold+0x9d/0xa9
+[   74.010013][ T1275]  slab_free_freelist_hook+0x73/0x1c0
+[   74.015385][ T1275]  ? spi_device_messages_show+0x80/0x80
+[   74.020926][ T1275]  ? device_release+0x9f/0x240
+[   74.025683][ T1275]  kfree+0xf3/0x550
+[   74.029489][ T1275]  ? devm_krealloc+0x530/0x530
+[   74.034366][ T1275]  ? device_del+0x963/0xd60
+[   74.038869][ T1275]  ? spi_device_messages_show+0x80/0x80
+[   74.044496][ T1275]  device_release+0x9f/0x240
+[   74.049082][ T1275]  kobject_put+0x1c8/0x540
+[   74.053503][ T1275]  put_device+0x1b/0x30
+[   74.057650][ T1275]  spi_unregister_controller+0x2a8/0x3b0
+[   74.063293][ T1275]  ? device_unregister+0x31/0xc0
+[   74.068225][ T1275]  msi2500_disconnect+0xd2/0x160
+[   74.073161][ T1275]  usb_unbind_interface+0x1d8/0x8d0
+[   74.078376][ T1275]  ? up_write+0x148/0x470
+[   74.082698][ T1275]  ? kernfs_remove_by_name_ns+0x60/0xa0
+[   74.088238][ T1275]  ? usb_unbind_device+0x1a0/0x1a0
+[   74.093355][ T1275]  __device_release_driver+0x5d7/0x700
+[   74.098811][ T1275]  device_release_driver+0x26/0x40
+[   74.103916][ T1275]  bus_remove_device+0x2eb/0x5a0
+[   74.108861][ T1275]  device_del+0x502/0xd60
+[   74.113186][ T1275]  ? fw_devlink_purge_absent_suppliers+0x50/0x50
+[   74.119772][ T1275]  ? mutex_lock_io_nested+0x1150/0x1150
+[   74.125399][ T1275]  usb_disable_device+0x35b/0x7b0
+[   74.130508][ T1275]  usb_disconnect.cold+0x27a/0x78e
+[   74.135677][ T1275]  hub_event+0x1c9c/0x4330
+[   74.140115][ T1275]  ? hub_port_debounce+0x3c0/0x3c0
+[   74.145244][ T1275]  ? lock_release+0x720/0x720
+[   74.149934][ T1275]  ? lock_downgrade+0x6e0/0x6e0
+[   74.154786][ T1275]  process_one_work+0x9bf/0x16b0
+[   74.159725][ T1275]  ? pwq_dec_nr_in_flight+0x2a0/0x2a0
+[   74.165097][ T1275]  ? rwlock_bug.part.0+0x90/0x90
+[   74.170036][ T1275]  ? _raw_spin_lock_irq+0x41/0x50
+[   74.175076][ T1275]  worker_thread+0x658/0x11f0
+[   74.179760][ T1275]  ? process_one_work+0x16b0/0x16b0
+[   74.184966][ T1275]  kthread+0x3e5/0x4d0
+[   74.189039][ T1275]  ? set_kthread_struct+0x130/0x130
+[   74.194247][ T1275]  ret_from_fork+0x1f/0x30
+[   74.201090][ T1275] ==================================================================
+[   74.209173][ T1275] BUG: KASAN: use-after-free in __mutex_unlock_slowpath+0xa6/0x5e0
+[   74.217083][ T1275] Read of size 8 at addr ffff888078f7c600 by task kworker/0:3/1275
+[   74.224975][ T1275] 
+[   74.227284][ T1275] CPU: 0 PID: 1275 Comm: kworker/0:3 Not tainted 5.15.0-rc6-syzkaller #0
+[   74.235673][ T1275] Hardware name: Google Google Compute Engine/Google Compute Engine, BIOS Google 01/01/2011
+[   74.245709][ T1275] Workqueue: usb_hub_wq hub_event
+[   74.250733][ T1275] Call Trace:
+[   74.254005][ T1275]  dump_stack_lvl+0xcd/0x134
+[   74.258588][ T1275]  print_address_description.constprop.0.cold+0x6c/0x309
+[   74.265595][ T1275]  ? __mutex_unlock_slowpath+0xa6/0x5e0
+[   74.271126][ T1275]  ? __mutex_unlock_slowpath+0xa6/0x5e0
+[   74.276743][ T1275]  kasan_report.cold+0x83/0xdf
+[   74.281489][ T1275]  ? __mutex_unlock_slowpath+0xa6/0x5e0
+[   74.287055][ T1275]  kasan_check_range+0x13d/0x180
+[   74.292044][ T1275]  __mutex_unlock_slowpath+0xa6/0x5e0
+[   74.297424][ T1275]  ? radix_tree_lookup+0x20/0x20
+[   74.302371][ T1275]  ? wait_for_completion_io+0x280/0x280
+[   74.307917][ T1275]  ? kfree_const+0x51/0x60
+[   74.312332][ T1275]  ? kobject_put+0x1f3/0x540
+[   74.316918][ T1275]  ? spi_unregister_controller+0x285/0x3b0
+[   74.322721][ T1275]  msi2500_disconnect+0xd2/0x160
+[   74.327655][ T1275]  usb_unbind_interface+0x1d8/0x8d0
+[   74.332852][ T1275]  ? up_write+0x148/0x470
+[   74.337184][ T1275]  ? kernfs_remove_by_name_ns+0x60/0xa0
+[   74.342727][ T1275]  ? usb_unbind_device+0x1a0/0x1a0
+[   74.347832][ T1275]  __device_release_driver+0x5d7/0x700
+[   74.353469][ T1275]  device_release_driver+0x26/0x40
+[   74.358576][ T1275]  bus_remove_device+0x2eb/0x5a0
+[   74.363510][ T1275]  device_del+0x502/0xd60
+[   74.369633][ T1275]  ? fw_devlink_purge_absent_suppliers+0x50/0x50
+[   74.375954][ T1275]  ? mutex_lock_io_nested+0x1150/0x1150
+[   74.381502][ T1275]  usb_disable_device+0x35b/0x7b0
+[   74.386522][ T1275]  usb_disconnect.cold+0x27a/0x78e
+[   74.391634][ T1275]  hub_event+0x1c9c/0x4330
+[   74.396056][ T1275]  ? hub_port_debounce+0x3c0/0x3c0
+[   74.401165][ T1275]  ? lock_release+0x720/0x720
+[   74.405834][ T1275]  ? lock_downgrade+0x6e0/0x6e0
+[   74.410689][ T1275]  process_one_work+0x9bf/0x16b0
+[   74.415639][ T1275]  ? pwq_dec_nr_in_flight+0x2a0/0x2a0
+[   74.421026][ T1275]  ? rwlock_bug.part.0+0x90/0x90
+[   74.425970][ T1275]  ? _raw_spin_lock_irq+0x41/0x50
+[   74.430999][ T1275]  worker_thread+0x658/0x11f0
+[   74.435675][ T1275]  ? process_one_work+0x16b0/0x16b0
+[   74.440883][ T1275]  kthread+0x3e5/0x4d0
+[   74.444942][ T1275]  ? set_kthread_struct+0x130/0x130
+[   74.450135][ T1275]  ret_from_fork+0x1f/0x30
+[   74.454552][ T1275] 
+[   74.456869][ T1275] Allocated by task 69:
+[   74.461091][ T1275]  kasan_save_stack+0x1b/0x40
+[   74.465772][ T1275]  __kasan_kmalloc+0xa4/0xd0
+[   74.470350][ T1275]  __spi_alloc_controller+0x35/0x310
+[   74.475627][ T1275]  msi2500_probe+0x685/0xbe0
+[   74.480216][ T1275]  usb_probe_interface+0x315/0x7f0
+[   74.485619][ T1275]  really_probe+0x245/0xcc0
+[   74.490131][ T1275]  __driver_probe_device+0x338/0x4d0
+[   74.495510][ T1275]  driver_probe_device+0x4c/0x1a0
+[   74.500545][ T1275]  __device_attach_driver+0x20b/0x2f0
+[   74.506101][ T1275]  bus_for_each_drv+0x15f/0x1e0
+[   74.510943][ T1275]  __device_attach+0x228/0x4a0
+[   74.515709][ T1275]  bus_probe_device+0x1e4/0x290
+[   74.520570][ T1275]  device_add+0xc17/0x1ee0
+[   74.524987][ T1275]  usb_set_configuration+0x113f/0x1910
+[   74.530443][ T1275]  usb_generic_driver_probe+0xba/0x100
+[   74.535903][ T1275]  usb_probe_device+0xd9/0x2c0
+[   74.541183][ T1275]  really_probe+0x245/0xcc0
+[   74.545679][ T1275]  __driver_probe_device+0x338/0x4d0
+[   74.550968][ T1275]  driver_probe_device+0x4c/0x1a0
+[   74.555986][ T1275]  __device_attach_driver+0x20b/0x2f0
+[   74.561353][ T1275]  bus_for_each_drv+0x15f/0x1e0
+[   74.566198][ T1275]  __device_attach+0x228/0x4a0
+[   74.570960][ T1275]  bus_probe_device+0x1e4/0x290
+[   74.575848][ T1275]  device_add+0xc17/0x1ee0
+[   74.580273][ T1275]  usb_new_device.cold+0x63f/0x108e
+[   74.585475][ T1275]  hub_event+0x2357/0x4330
+[   74.589889][ T1275]  process_one_work+0x9bf/0x16b0
+[   74.594822][ T1275]  worker_thread+0x658/0x11f0
+[   74.599583][ T1275]  kthread+0x3e5/0x4d0
+[   74.603650][ T1275]  ret_from_fork+0x1f/0x30
+[   74.608068][ T1275] 
+[   74.610377][ T1275] Freed by task 1275:
+[   74.614339][ T1275]  kasan_save_stack+0x1b/0x40
+[   74.619013][ T1275]  kasan_set_track+0x1c/0x30
+[   74.623606][ T1275]  kasan_set_free_info+0x20/0x30
+[   74.629340][ T1275]  __kasan_slab_free+0xff/0x130
+[   74.634179][ T1275]  slab_free_freelist_hook+0x8b/0x1c0
+[   74.639545][ T1275]  kfree+0xf3/0x550
+[   74.643357][ T1275]  device_release+0x9f/0x240
+[   74.647935][ T1275]  kobject_put+0x1c8/0x540
+[   74.652339][ T1275]  put_device+0x1b/0x30
+[   74.656483][ T1275]  spi_unregister_controller+0x2a8/0x3b0
+[   74.662108][ T1275]  msi2500_disconnect+0xd2/0x160
+[   74.667037][ T1275]  usb_unbind_interface+0x1d8/0x8d0
+[   74.672403][ T1275]  __device_release_driver+0x5d7/0x700
+[   74.677862][ T1275]  device_release_driver+0x26/0x40
+[   74.682967][ T1275]  bus_remove_device+0x2eb/0x5a0
+[   74.687906][ T1275]  device_del+0x502/0xd60
+[   74.692278][ T1275]  usb_disable_device+0x35b/0x7b0
+[   74.697295][ T1275]  usb_disconnect.cold+0x27a/0x78e
+[   74.702430][ T1275]  hub_event+0x1c9c/0x4330
+[   74.706963][ T1275]  process_one_work+0x9bf/0x16b0
+[   74.711909][ T1275]  worker_thread+0x658/0x11f0
+[   74.716605][ T1275]  kthread+0x3e5/0x4d0
+[   74.720672][ T1275]  ret_from_fork+0x1f/0x30
+[   74.725096][ T1275] 
+[   74.727405][ T1275] The buggy address belongs to the object at ffff888078f7c000
+[   74.727405][ T1275]  which belongs to the cache kmalloc-4k of size 4096
+[   74.741441][ T1275] The buggy address is located 1536 bytes inside of
+[   74.741441][ T1275]  4096-byte region [ffff888078f7c000, ffff888078f7d000)
+[   74.754883][ T1275] The buggy address belongs to the page:
+[   74.760495][ T1275] page:ffffea0001e3de00 refcount:1 mapcount:0 mapping:0000000000000000 index:0x0 pfn:0x78f78
+[   74.770632][ T1275] head:ffffea0001e3de00 order:3 compound_mapcount:0 compound_pincount:0
+[   74.778940][ T1275] flags: 0xfff00000010200(slab|head|node=0|zone=1|lastcpupid=0x7ff)
+[   74.787701][ T1275] raw: 00fff00000010200 0000000000000000 dead000000000122 ffff888010c42140
+[   74.796273][ T1275] raw: 0000000000000000 0000000000040004 00000001ffffffff 0000000000000000
+[   74.804850][ T1275] page dumped because: kasan: bad access detected
+[   74.811242][ T1275] page_owner tracks the page as allocated
+[   74.817039][ T1275] page last allocated via order 3, migratetype Unmovable, gfp_mask 0xd20c0(__GFP_IO|__GFP_FS|__GFP_NOWARN|__GFP_NORETRY|__GFP_COMP|__GFP_NOMEMALLOC), pid 69, ts 73591547684, free_ts 72672350436
+[   74.836153][ T1275]  get_page_from_freelist+0xa72/0x2f80
+[   74.841619][ T1275]  __alloc_pages+0x1b2/0x500
+[   74.846202][ T1275]  alloc_pages+0x1a7/0x300
+[   74.850609][ T1275]  new_slab+0x319/0x490
+[   74.854770][ T1275]  ___slab_alloc+0x950/0x1050
+[   74.859448][ T1275]  __slab_alloc.constprop.0+0x4d/0xa0
+[   74.864828][ T1275]  kmem_cache_alloc_trace+0x302/0x3c0
+[   74.870407][ T1275]  kobject_uevent_env+0x240/0x1650
+[   74.875510][ T1275]  device_add+0xbb4/0x1ee0
+[   74.880023][ T1275]  usb_set_configuration+0x113f/0x1910
+[   74.885569][ T1275]  usb_generic_driver_probe+0xba/0x100
+[   74.891016][ T1275]  usb_probe_device+0xd9/0x2c0
+[   74.895775][ T1275]  really_probe+0x245/0xcc0
+[   74.900271][ T1275]  __driver_probe_device+0x338/0x4d0
+[   74.905549][ T1275]  driver_probe_device+0x4c/0x1a0
+[   74.910571][ T1275]  __device_attach_driver+0x20b/0x2f0
+[   74.916024][ T1275] page last free stack trace:
+[   74.920678][ T1275]  free_pcp_prepare+0x2c5/0x780
+[   74.925527][ T1275]  free_unref_page+0x19/0x690
+[   74.930247][ T1275]  qlist_free_all+0x5a/0xc0
+[   74.934752][ T1275]  kasan_quarantine_reduce+0x180/0x200
+[   74.940300][ T1275]  __kasan_slab_alloc+0x95/0xb0
+[   74.945227][ T1275]  kmem_cache_alloc_trace+0x260/0x3c0
+[   74.950596][ T1275]  call_usermodehelper_setup+0x97/0x340
+[   74.956139][ T1275]  kobject_uevent_env+0xf73/0x1650
+[   74.961286][ T1275]  netdev_queue_update_kobjects+0x37a/0x460
+[   74.967177][ T1275]  netdev_register_kobject+0x35a/0x430
+[   74.972627][ T1275]  register_netdevice+0xd33/0x1500
+[   74.977731][ T1275]  register_netdev+0x2d/0x50
+[   74.982486][ T1275]  loopback_net_init+0x73/0x160
+[   74.987325][ T1275]  ops_init+0xaf/0x470
+[   74.991390][ T1275]  setup_net+0x40f/0xa30
+[   74.995619][ T1275]  copy_net_ns+0x319/0x760
+[   75.000025][ T1275] 
+[   75.002335][ T1275] Memory state around the buggy address:
+[   75.007948][ T1275]  ffff888078f7c500: fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb
+[   75.016001][ T1275]  ffff888078f7c580: fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb
+[   75.024091][ T1275] >ffff888078f7c600: fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb
+[   75.032226][ T1275]                    ^
+[   75.036276][ T1275]  ffff888078f7c680: fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb
+[   75.044323][ T1275]  ffff888078f7c700: fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb fb
+[   75.052364][ T1275] ==================================================================
+[   75.070580][ T1275] Kernel panic - not syncing: panic_on_warn set ...
+[   75.077272][ T1275] CPU: 0 PID: 1275 Comm: kworker/0:3 Tainted: G    B             5.15.0-rc6-syzkaller #0
+[   75.087081][ T1275] Hardware name: Google Google Compute Engine/Google Compute Engine, BIOS Google 01/01/2011
+[   75.097146][ T1275] Workqueue: usb_hub_wq hub_event
+[   75.102186][ T1275] Call Trace:
+[   75.105524][ T1275]  dump_stack_lvl+0xcd/0x134
+[   75.110102][ T1275]  panic+0x2b0/0x6dd
+[   75.114015][ T1275]  ? __warn_printk+0xf3/0xf3
+[   75.118602][ T1275]  ? preempt_schedule_common+0x59/0xc0
+[   75.124053][ T1275]  ? __mutex_unlock_slowpath+0xa6/0x5e0
+[   75.129592][ T1275]  ? preempt_schedule_thunk+0x16/0x18
+[   75.134954][ T1275]  ? trace_hardirqs_on+0x38/0x1c0
+[   75.139961][ T1275]  ? trace_hardirqs_on+0x51/0x1c0
+[   75.144968][ T1275]  ? __mutex_unlock_slowpath+0xa6/0x5e0
+[   75.150492][ T1275]  ? __mutex_unlock_slowpath+0xa6/0x5e0
+[   75.156031][ T1275]  end_report.cold+0x63/0x6f
+[   75.160605][ T1275]  kasan_report.cold+0x71/0xdf
+[   75.165356][ T1275]  ? __mutex_unlock_slowpath+0xa6/0x5e0
+[   75.170884][ T1275]  kasan_check_range+0x13d/0x180
+[   75.175821][ T1275]  __mutex_unlock_slowpath+0xa6/0x5e0
+[   75.181190][ T1275]  ? radix_tree_lookup+0x20/0x20
+[   75.186223][ T1275]  ? wait_for_completion_io+0x280/0x280
+[   75.191764][ T1275]  ? kfree_const+0x51/0x60
+[   75.196175][ T1275]  ? kobject_put+0x1f3/0x540
+[   75.200767][ T1275]  ? spi_unregister_controller+0x285/0x3b0
+[   75.206571][ T1275]  msi2500_disconnect+0xd2/0x160
+[   75.211523][ T1275]  usb_unbind_interface+0x1d8/0x8d0
+[   75.216717][ T1275]  ? up_write+0x148/0x470
+[   75.221051][ T1275]  ? kernfs_remove_by_name_ns+0x60/0xa0
+[   75.226608][ T1275]  ? usb_unbind_device+0x1a0/0x1a0
+[   75.231716][ T1275]  __device_release_driver+0x5d7/0x700
+[   75.237190][ T1275]  device_release_driver+0x26/0x40
+[   75.242307][ T1275]  bus_remove_device+0x2eb/0x5a0
+[   75.247260][ T1275]  device_del+0x502/0xd60
+[   75.251799][ T1275]  ? fw_devlink_purge_absent_suppliers+0x50/0x50
+[   75.258322][ T1275]  ? mutex_lock_io_nested+0x1150/0x1150
+[   75.263871][ T1275]  usb_disable_device+0x35b/0x7b0
+[   75.268896][ T1275]  usb_disconnect.cold+0x27a/0x78e
+[   75.274022][ T1275]  hub_event+0x1c9c/0x4330
+[   75.278466][ T1275]  ? hub_port_debounce+0x3c0/0x3c0
+[   75.283576][ T1275]  ? lock_release+0x720/0x720
+[   75.288249][ T1275]  ? lock_downgrade+0x6e0/0x6e0
+[   75.293108][ T1275]  process_one_work+0x9bf/0x16b0
+[   75.298064][ T1275]  ? pwq_dec_nr_in_flight+0x2a0/0x2a0
+[   75.303449][ T1275]  ? rwlock_bug.part.0+0x90/0x90
+[   75.308415][ T1275]  ? _raw_spin_lock_irq+0x41/0x50
+[   75.313440][ T1275]  worker_thread+0x658/0x11f0
+[   75.318199][ T1275]  ? process_one_work+0x16b0/0x16b0
+[   75.323394][ T1275]  kthread+0x3e5/0x4d0
+[   75.327460][ T1275]  ? set_kthread_struct+0x130/0x130
+[   75.332677][ T1275]  ret_from_fork+0x1f/0x30
+[   75.337149][ T1275] Kernel Offset: disabled
+[   75.341560][ T1275] Rebooting in 86400 seconds..

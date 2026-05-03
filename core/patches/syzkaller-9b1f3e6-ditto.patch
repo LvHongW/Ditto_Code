@@ -1,0 +1,4906 @@
+diff --git a/CorrectTemplate b/CorrectTemplate
+new file mode 100644
+index 000000000..c63a72f72
+--- /dev/null
++++ b/CorrectTemplate
+@@ -0,0 +1 @@
++syscall:openat$proc_mixer
+\ No newline at end of file
+diff --git a/Makefile b/Makefile
+index b28867868..ddc65fa93 100644
+--- a/Makefile
++++ b/Makefile
+@@ -107,7 +107,7 @@ all: host target
+ 
+ host:
+ 	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) install ./syz-manager
+-	$(MAKE) manager runtest repro mutate prog2c db upgrade
++	$(MAKE) manager runtest repro mutate prog2c db upgrade branch2addr logparser
+ 
+ target:
+ 	GOOS=$(TARGETGOOS) GOARCH=$(TARGETGOARCH) $(GO) install ./syz-fuzzer
+@@ -177,6 +177,11 @@ usbgen:
+ expand:
+ 	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/syz-expand github.com/google/syzkaller/tools/syz-expand
+ 
++branch2addr:
++	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/syz-branch2addr github.com/google/syzkaller/tools/syz-branch2addr
++
++logparser:
++	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/syz-logparser github.com/google/syzkaller/tools/syz-logparser
+ # `extract` extracts const files from various kernel sources, and may only
+ # re-generate parts of files.
+ extract: bin/syz-extract
+diff --git a/courier/queue.go b/courier/queue.go
+new file mode 100644
+index 000000000..9869d9fb5
+--- /dev/null
++++ b/courier/queue.go
+@@ -0,0 +1,85 @@
++package courier
++
++import (
++	"sync"
++	
++	"github.com/google/syzkaller/pkg/rpctype"
++)
++
++const (
++	Mutating = 0
++	Commands = 1
++	S2E      = 2
++	Critical = 3
++)
++
++type S2EArgs struct {
++	Prog    []byte
++	Pointer []byte
++}
++
++var MutateArgsQueue = make([]rpctype.ProgQueue, 0)
++var CriticalPoCQueue = make([]rpctype.ProgQueue, 0)
++var CommandsQueue = make([]string, 0)
++var S2EArgsQueue = make([]S2EArgs, 0)
++var Mutex = &sync.Mutex{}
++
++func AppendMutatingQueue(p, pocProg []byte, nOfCalls int) {
++	a := rpctype.ProgQueue{
++		Prog:     p,
++		NOfCalls: nOfCalls,
++		PocProg:  pocProg,
++	}
++	MutateArgsQueue = append(MutateArgsQueue, a)
++}
++
++func AppendCriticalPoCQueue(p []byte) {
++	a := rpctype.ProgQueue{
++		Prog:     p,
++		NOfCalls: 0,
++		PocProg:  p,
++	}
++	CriticalPoCQueue = append(CriticalPoCQueue, a)
++}
++
++func AppendCommandsQueue(p []byte) {
++	CommandsQueue = append(CommandsQueue, string(p))
++}
++
++func AppendS2EQueue(p S2EArgs) {
++	S2EArgsQueue = append(S2EArgsQueue, p)
++}
++
++func RetrieveFirstArg(flag int) interface{} {
++	switch flag {
++	case Mutating:
++		if len(MutateArgsQueue) == 0 {
++			break
++		}
++		p := MutateArgsQueue[0]
++		MutateArgsQueue = MutateArgsQueue[1:]
++		return p
++	case Commands:
++		if len(CommandsQueue) == 0 {
++			break
++		}
++		p := CommandsQueue[0]
++		CommandsQueue = CommandsQueue[1:]
++		return []byte(p)
++	case S2E:
++		if len(S2EArgsQueue) == 0 {
++			break
++		}
++		p := S2EArgsQueue[0]
++		S2EArgsQueue = S2EArgsQueue[1:]
++		return p
++	case Critical:
++		if len(CriticalPoCQueue) == 0 {
++			break
++		}
++		p := CriticalPoCQueue[0]
++		CriticalPoCQueue = CriticalPoCQueue[1:]
++		return p
++	}
++	return nil
++}
+diff --git a/courier/utilities.go b/courier/utilities.go
+new file mode 100644
+index 000000000..dd77605a8
+--- /dev/null
++++ b/courier/utilities.go
+@@ -0,0 +1,68 @@
++package courier
++
++import (
++	"bytes"
++	"fmt"
++	"io"
++	"os"
++	"path"
++
++	"github.com/google/syzkaller/pkg/log"
++)
++
++var AnalyzerPath string
++var ConfirmedSuccess = false
++
++func AppendTestcase(testcase, pocProg []byte, nOfCalls int) {
++	AppendMutatingQueue(testcase, pocProg, nOfCalls)
++}
++
++func RemoveComments(text []byte) []byte {
++	var res []byte
++	start := 0
++	lines := bytes.SplitAfter(text, []byte("\n"))
++	for i, line := range lines {
++		if line[0] != '#' {
++			start = i
++			break
++		}
++	}
++	for i := start; i < len(lines); i++ {
++		res = append(res, lines[i]...)
++	}
++	return res
++}
++
++func checkDuplication(hash string, f *os.File) bool {
++	line := make([]byte, 8)
++	for {
++		n, err := f.Read(line)
++		if n == 0 && err == io.EOF {
++			break
++		}
++		if err != nil {
++			fmt.Printf("Fail to read: %v\n", err)
++			return true
++		}
++		if string(line[:len(line)-1]) == hash {
++			return true
++		}
++	}
++	return false
++}
++
++func SaveToFile(filename string) {
++	hash := path.Base(AnalyzerPath)
++	work := path.Dir(path.Dir(AnalyzerPath))
++	success := path.Join(work, filename)
++	f, err := os.OpenFile(success, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0600)
++	if err != nil {
++		log.Logf(0, "Fail to open %s: %v", success, err)
++		return
++	}
++	defer f.Close()
++	if !checkDuplication(hash, f) {
++		log.Logf(0, "Write %s to %s", filename, success)
++		f.WriteString(hash + "\n")
++	}
++}
+diff --git a/pkg/build/netbsd.go b/pkg/build/netbsd.go
+index 68836f3a1..b5e471c2a 100644
+--- a/pkg/build/netbsd.go
++++ b/pkg/build/netbsd.go
+@@ -136,7 +136,7 @@ func (ctx netbsd) copyKernelToDisk(targetArch, vmType, outputDir, kernel string)
+ 		return fmt.Errorf("error syncing the instance %v", err)
+ 	}
+ 	// Make sure that the command has executed properly.
+-	rep := inst.MonitorExecution(outc, errc, reporter, vm.ExitNormal)
++	rep := inst.MonitorExecution(outc, errc, reporter, vm.ExitNormal, time.Now(), -1)
+ 	if rep != nil {
+ 		return fmt.Errorf("error executing sync: %v", rep.Title)
+ 	}
+diff --git a/pkg/compiler/check.go b/pkg/compiler/check.go
+index 7f12d74a5..313875545 100644
+--- a/pkg/compiler/check.go
++++ b/pkg/compiler/check.go
+@@ -546,8 +546,7 @@ func (comp *compiler) collectUsedType(structs, flags, strflags map[string]bool,
+ 
+ func (comp *compiler) checkUnused() {
+ 	for _, n := range comp.collectUnused() {
+-		pos, typ, name := n.Info()
+-		comp.error(pos, fmt.Sprintf("unused %v %v", typ, name))
++		n.Info()
+ 	}
+ }
+ 
+diff --git a/pkg/instance/instance.go b/pkg/instance/instance.go
+index 5adc9dc63..d7332115f 100644
+--- a/pkg/instance/instance.go
++++ b/pkg/instance/instance.go
+@@ -322,7 +322,7 @@ func (inst *inst) testInstance() error {
+ 	if err != nil {
+ 		return fmt.Errorf("failed to run binary in VM: %v", err)
+ 	}
+-	rep := inst.vm.MonitorExecution(outc, errc, inst.reporter, vm.ExitNormal)
++	rep := inst.vm.MonitorExecution(outc, errc, inst.reporter, vm.ExitNormal, time.Now(), -1)
+ 	if rep != nil {
+ 		if err := inst.reporter.Symbolize(rep); err != nil {
+ 			// TODO(dvyukov): send such errors to dashboard.
+@@ -410,7 +410,7 @@ func (inst *inst) testProgram(command string, testTime time.Duration) error {
+ 		return fmt.Errorf("failed to run binary in VM: %v", err)
+ 	}
+ 	rep := inst.vm.MonitorExecution(outc, errc, inst.reporter,
+-		vm.ExitTimeout|vm.ExitNormal|vm.ExitError)
++		vm.ExitTimeout|vm.ExitNormal|vm.ExitError, time.Now(), -1)
+ 	if rep == nil {
+ 		return nil
+ 	}
+@@ -421,7 +421,7 @@ func (inst *inst) testProgram(command string, testTime time.Duration) error {
+ }
+ 
+ func FuzzerCmd(fuzzer, executor, name, OS, arch, fwdAddr, sandbox string, procs, verbosity int,
+-	cover, debug, test, runtest bool) string {
++	cover, debug, test, runtest, poc bool, mutatetime int, criticalsys string, criticalsysseq string) string {
+ 	osArg := ""
+ 	if targets.Get(OS, arch).HostFuzzer {
+ 		// Only these OSes need the flag, because the rest assume host OS.
+@@ -438,13 +438,13 @@ func FuzzerCmd(fuzzer, executor, name, OS, arch, fwdAddr, sandbox string, procs,
+ 		verbosityArg = fmt.Sprintf(" -vv=%v", verbosity)
+ 	}
+ 	return fmt.Sprintf("%v -executor=%v -name=%v -arch=%v%v -manager=%v -sandbox=%v"+
+-		" -procs=%v -cover=%v -debug=%v -test=%v%v%v",
++		" -procs=%v -cover=%v -debug=%v -test=%v%v%v -poc=%v -mutatetime=%v -criticalsys=%v -criticalsysseq=%v",
+ 		fuzzer, executor, name, arch, osArg, fwdAddr, sandbox,
+-		procs, cover, debug, test, runtestArg, verbosityArg)
++		procs, cover, debug, test, runtestArg, verbosityArg, poc, mutatetime, criticalsys, criticalsysseq)
+ }
+ 
+ func OldFuzzerCmd(fuzzer, executor, name, OS, arch, fwdAddr, sandbox string, procs int, cover, test bool) string {
+-	return FuzzerCmd(fuzzer, executor, name, OS, arch, fwdAddr, sandbox, procs, 0, cover, false, test, false)
++	return FuzzerCmd(fuzzer, executor, name, OS, arch, fwdAddr, sandbox, procs, 0, cover, false, test, false, false, 500, "", "")
+ }
+ 
+ func ExecprogCmd(execprog, executor, OS, arch, sandbox string, repeat, threaded, collide bool,
+diff --git a/pkg/mgrconfig/config.go b/pkg/mgrconfig/config.go
+index 69df2a801..a399a3bfb 100644
+--- a/pkg/mgrconfig/config.go
++++ b/pkg/mgrconfig/config.go
+@@ -114,4 +114,15 @@ type Config struct {
+ 	SyzFuzzerBin   string `json:"-"`
+ 	SyzExecprogBin string `json:"-"`
+ 	SyzExecutorBin string `json:"-"`
++	Testcase       string `json:"testcase"`
++	AnalyzerDir    string `json:"analyzer_dir"`
++	TimeLimit      string `json:"time_limit"`
++	StoreRead      bool   `json:"store_read"`
++	GrebeStruct    string `json:"grebe_struct"`
++	MutateTime     int `json:"mutatetime"`
++	CallTracePath  string `json:"calltrace_path"`
++	CriticalSys    []string `json:"critical_sys"`
++	CriticalSysSeq []string `json:"critical_sys_seq"`
++	CalltraceSim   float64 `json:"calltracesim"`
++	ReproSim   float64 `json:"reprosim"`
+ }
+diff --git a/pkg/mgrconfig/load.go b/pkg/mgrconfig/load.go
+index 4e4136362..a8b14b2bc 100644
+--- a/pkg/mgrconfig/load.go
++++ b/pkg/mgrconfig/load.go
+@@ -11,6 +11,7 @@ import (
+ 	"strings"
+ 
+ 	"github.com/google/syzkaller/pkg/config"
++	"github.com/google/syzkaller/pkg/log"
+ 	"github.com/google/syzkaller/pkg/osutil"
+ 	"github.com/google/syzkaller/prog"
+ 	_ "github.com/google/syzkaller/sys" // most mgrconfig users want targets too
+@@ -197,6 +198,7 @@ func splitTarget(target string) (string, string, string, error) {
+ }
+ 
+ func ParseEnabledSyscalls(target *prog.Target, enabled, disabled []string) ([]int, error) {
++	log.Logf(0,"enabled syscall:%v",enabled)
+ 	syscalls := make(map[int]bool)
+ 	if len(enabled) != 0 {
+ 		for _, c := range enabled {
+@@ -208,7 +210,7 @@ func ParseEnabledSyscalls(target *prog.Target, enabled, disabled []string) ([]in
+ 				}
+ 			}
+ 			if n == 0 {
+-				return nil, fmt.Errorf("unknown enabled syscall: %v", c)
++				log.Logf(0, "unknown enabled syscall: %v", c)
+ 			}
+ 		}
+ 	} else {
+@@ -225,11 +227,11 @@ func ParseEnabledSyscalls(target *prog.Target, enabled, disabled []string) ([]in
+ 			}
+ 		}
+ 		if n == 0 {
+-			return nil, fmt.Errorf("unknown disabled syscall: %v", c)
++			log.Logf(0, "unknown disabled syscall: %v", c)
+ 		}
+ 	}
+ 	if len(syscalls) == 0 {
+-		return nil, fmt.Errorf("all syscalls are disabled by disable_syscalls in config")
++		log.Logf(0, "all syscalls are disabled by disable_syscalls in config")
+ 	}
+ 	var arr []int
+ 	for id := range syscalls {
+diff --git a/pkg/report/linux.go b/pkg/report/linux.go
+index 07c061ff9..742405b6e 100644
+--- a/pkg/report/linux.go
++++ b/pkg/report/linux.go
+@@ -129,7 +129,7 @@ func (ctx *linux) ContainsCrash(output []byte) bool {
+ }
+ 
+ func (ctx *linux) Parse(output []byte) *Report {
+-	oops, startPos, context := ctx.findFirstOops(output)
++	oops, startPos, context := ctx.findCriticalOops(output)
+ 	if oops == nil {
+ 		return nil
+ 	}
+@@ -185,6 +185,75 @@ func (ctx *linux) findFirstOops(output []byte) (oops *oops, startPos int, contex
+ 	return
+ }
+ 
++func (ctx *linux) findCriticalOops(output []byte) (oops *oops, startPos int, context string) {
++	index := ChooseCriticalCrash(output)
++	for pos, next := 0, 0; pos < len(output); pos = next + 1 {
++		next = bytes.IndexByte(output[pos:], '\n')
++		if next != -1 {
++			next += pos
++		} else {
++			next = len(output)
++		}
++		line := output[pos:next]
++		for _, oops1 := range linuxOopses {
++			if matchOops(line, oops1, ctx.ignores) {
++				oops = oops1
++				startPos = pos
++				context = ctx.extractContext(line)
++				if len(index) == 0 {
++					return
++				}
++				break
++			}
++		}
++		if len(index) > 0 {
++			if pos <= index[0][0] && next >= index[0][1] {
++				return
++			}
++		}
++	}
++	return
++}
++
++func ChooseCriticalCrash(output []byte) [][]int {
++	var index [][]int
++	var crashRegx []*regexp.Regexp
++	//kasanRegx := regexp.MustCompile(`BUG: KASAN: ([a-z\\-]+) in ([a-zA-Z0-9_]+).*`)
++	//oobReadRegx := regexp.MustCompile(`\?!\?MAGIC\?!\?read->(\w*) size->(\d*)`)
++	if ReadIsCritical {
++		crashRegx = append(crashRegx, regexp.MustCompile(`Read of size (\d+) at addr (\w*)`))
++	}
++	crashRegx = append(crashRegx, regexp.MustCompile(`Write of size (\d+) at addr (\w*)`))
++	crashRegx = append(crashRegx, regexp.MustCompile(`BUG: KASAN: double-free or invalid-free in`))
++	crashRegx = append(crashRegx, regexp.MustCompile(`invalid-free in`))
++	for _, each := range crashRegx {
++		index = each.FindAllIndex(output, -1)
++		if len(index) > 0 {
++			break
++		}
++	}
++	return index
++}
++
++func (ctx *linux) takeAfterContext(line []byte) []byte {
++	prefix := ctx.extractContext(line)
++	index := strings.Index(string(line), prefix)
++	new := make([]byte, len(line)-(index+len(prefix))+1)
++	copy(new, line[index+len(prefix):])
++	return new
++}
++
++func (ctx *linux) getNextLine(start int, output []byte) []byte {
++	next := bytes.IndexByte(output[start:], '\n')
++	if next != -1 {
++		next += start
++	} else {
++		next = len(output)
++	}
++	line := output[start:next]
++	return line
++}
++
+ // Yes, it is complex, but all state and logic are tightly coupled. It's unclear how to simplify it.
+ // nolint: gocyclo
+ func (ctx *linux) findReport(output []byte, oops *oops, startPos int, context string) (
+@@ -454,6 +523,9 @@ func (ctx *linux) getMaintainersImpl(file string, blame bool) ([]string, error)
+ 	if blame {
+ 		args = append(args, "--git-blame")
+ 	}
++	if strings.Contains(file, "/linux/") {
++		file = strings.Split(file, "/linux/")[1]
++	}
+ 	args = append(args, "-f", file)
+ 	script := filepath.FromSlash("scripts/get_maintainer.pl")
+ 	output, err := osutil.RunCmd(time.Minute, ctx.kernelSrc, script, args...)
+diff --git a/pkg/report/report.go b/pkg/report/report.go
+index c9832c9af..461429f95 100644
+--- a/pkg/report/report.go
++++ b/pkg/report/report.go
+@@ -83,6 +83,8 @@ func (t Type) String() string {
+ 	}
+ }
+ 
++var ReadIsCritical bool
++
+ // NewReporter creates reporter for the specified OS/Type.
+ func NewReporter(cfg *mgrconfig.Config) (Reporter, error) {
+ 	typ := cfg.TargetOS
+diff --git a/pkg/repro/repro.go b/pkg/repro/repro.go
+index 6de117df6..f5fbd9c2e 100644
+--- a/pkg/repro/repro.go
++++ b/pkg/repro/repro.go
+@@ -10,6 +10,7 @@ import (
+ 	"sort"
+ 	"sync"
+ 	"time"
++	"strings"
+ 
+ 	"github.com/google/syzkaller/pkg/csource"
+ 	instancePkg "github.com/google/syzkaller/pkg/instance"
+@@ -22,6 +23,9 @@ import (
+ 	"github.com/google/syzkaller/vm"
+ )
+ 
++var TargetNewCrash string
++var AlreadyReproCrash map[string]bool
++
+ type Result struct {
+ 	Prog     *prog.Prog
+ 	Duration time.Duration
+@@ -29,7 +33,8 @@ type Result struct {
+ 	CRepro   bool
+ 	// Information about the final (non-symbolized) crash that we reproduced.
+ 	// Can be different from what we started reproducing.
+-	Report *report.Report
++	Report  *report.Report
++	Command string
+ }
+ 
+ type Stats struct {
+@@ -85,7 +90,6 @@ func initInstance(cfg *mgrconfig.Config, vmPool *vm.Pool, vmIndex int) (*instanc
+ 		execprogBin: execprogBin,
+ 		executorBin: executorCmd,
+ 	}, nil
+-
+ }
+ 
+ func Run(crashLog []byte, cfg *mgrconfig.Config, reporter report.Reporter, vmPool *vm.Pool,
+@@ -193,7 +197,7 @@ func Run(crashLog []byte, cfg *mgrconfig.Config, reporter report.Reporter, vmPoo
+ 			if res.CRepro {
+ 				_, err = ctx.testCProg(res.Prog, res.Duration, res.Opts)
+ 			} else {
+-				_, err = ctx.testProg(res.Prog, res.Duration, res.Opts)
++				_, _, err = ctx.testProg(res.Prog, res.Duration, res.Opts)
+ 			}
+ 			if err != nil {
+ 				return nil, nil, err
+@@ -234,12 +238,14 @@ func (ctx *context) repro(entries []*prog.LogEntry, crashStart int) (*Result, er
+ 	}()
+ 	res, err = ctx.minimizeProg(res)
+ 	if err != nil {
++		ctx.reproLog(0, "minimizing err:%v", err)
+ 		return nil, err
+ 	}
+ 
+ 	// Try extracting C repro without simplifying options first.
+ 	res, err = ctx.extractC(res)
+ 	if err != nil {
++		ctx.reproLog(0, "extractC err:%v", err)
+ 		return nil, err
+ 	}
+ 
+@@ -247,6 +253,7 @@ func (ctx *context) repro(entries []*prog.LogEntry, crashStart int) (*Result, er
+ 	if !res.CRepro {
+ 		res, err = ctx.simplifyProg(res)
+ 		if err != nil {
++			ctx.reproLog(0, "simplifyProg err:%v", err)
+ 			return nil, err
+ 		}
+ 	}
+@@ -255,13 +262,14 @@ func (ctx *context) repro(entries []*prog.LogEntry, crashStart int) (*Result, er
+ 	if res.CRepro {
+ 		res, err = ctx.simplifyC(res)
+ 		if err != nil {
++			ctx.reproLog(0, "simplifyC err:%v", err)
+ 			return nil, err
+ 		}
+ 	}
+-
+ 	return res, nil
+ }
+ 
++
+ func (ctx *context) extractProg(entries []*prog.LogEntry) (*Result, error) {
+ 	ctx.reproLog(2, "extracting reproducer from %v programs", len(entries))
+ 	start := time.Now()
+@@ -291,7 +299,7 @@ func (ctx *context) extractProg(entries []*prog.LogEntry) (*Result, error) {
+ 			return nil, err
+ 		}
+ 		if res != nil {
+-			ctx.reproLog(3, "found reproducer with %d syscalls", len(res.Prog.Calls))
++			ctx.reproLog(3, "extractProgSingle: found reproducer with %d syscalls", len(res.Prog.Calls))
+ 			return res, nil
+ 		}
+ 
+@@ -299,14 +307,13 @@ func (ctx *context) extractProg(entries []*prog.LogEntry) (*Result, error) {
+ 		if len(entries) == 1 {
+ 			continue
+ 		}
+-
+ 		// Execute all programs and bisect the log to find multiple guilty programs.
+ 		res, err = ctx.extractProgBisect(entries, timeout)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+ 		if res != nil {
+-			ctx.reproLog(3, "found reproducer with %d syscalls", len(res.Prog.Calls))
++			ctx.reproLog(3, "extractProgBisect: found reproducer with %d syscalls", len(res.Prog.Calls))
+ 			return res, nil
+ 		}
+ 	}
+@@ -329,7 +336,7 @@ func (ctx *context) extractProgSingle(entries []*prog.LogEntry, duration time.Du
+ 		if opts.FaultCall < 0 || opts.FaultCall >= len(ent.P.Calls) {
+ 			opts.FaultCall = len(ent.P.Calls) - 1
+ 		}
+-		crashed, err := ctx.testProg(ent.P, duration, opts)
++		crashed, command, err := ctx.testProg(ent.P, duration, opts)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -338,6 +345,7 @@ func (ctx *context) extractProgSingle(entries []*prog.LogEntry, duration time.Du
+ 				Prog:     ent.P,
+ 				Duration: duration * 3 / 2,
+ 				Opts:     opts,
++				Command:  command,
+ 			}
+ 			ctx.reproLog(3, "single: successfully extracted reproducer")
+ 			return res, nil
+@@ -361,7 +369,8 @@ func (ctx *context) extractProgBisect(entries []*prog.LogEntry, baseDuration tim
+ 
+ 	// Bisect the log to find multiple guilty programs.
+ 	entries, err := ctx.bisectProgs(entries, func(progs []*prog.LogEntry) (bool, error) {
+-		return ctx.testProgs(progs, duration(len(progs)), opts)
++		crashed, _, err := ctx.testProgs(progs, duration(len(progs)), opts)
++		return crashed, err
+ 	})
+ 	if err != nil {
+ 		return nil, err
+@@ -386,7 +395,7 @@ func (ctx *context) extractProgBisect(entries []*prog.LogEntry, baseDuration tim
+ 	dur := duration(len(entries)) * 3 / 2
+ 
+ 	// Execute the program without fault injection.
+-	crashed, err := ctx.testProg(prog, dur, opts)
++	crashed, command, err := ctx.testProg(prog, dur, opts)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -395,6 +404,7 @@ func (ctx *context) extractProgBisect(entries []*prog.LogEntry, baseDuration tim
+ 			Prog:     prog,
+ 			Duration: dur,
+ 			Opts:     opts,
++			Command:  command,
+ 		}
+ 		ctx.reproLog(3, "bisect: concatenation succeeded")
+ 		return res, nil
+@@ -409,7 +419,7 @@ func (ctx *context) extractProgBisect(entries []*prog.LogEntry, baseDuration tim
+ 			if entry.FaultCall < 0 || entry.FaultCall >= len(entry.P.Calls) {
+ 				opts.FaultCall = calls + len(entry.P.Calls) - 1
+ 			}
+-			crashed, err := ctx.testProg(prog, dur, opts)
++			crashed, command, err := ctx.testProg(prog, dur, opts)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+@@ -418,6 +428,7 @@ func (ctx *context) extractProgBisect(entries []*prog.LogEntry, baseDuration tim
+ 					Prog:     prog,
+ 					Duration: dur,
+ 					Opts:     opts,
++					Command:  command,
+ 				}
+ 				ctx.reproLog(3, "bisect: concatenation succeeded with fault injection")
+ 				return res, nil
+@@ -444,7 +455,7 @@ func (ctx *context) minimizeProg(res *Result) (*Result, error) {
+ 	}
+ 	res.Prog, res.Opts.FaultCall = prog.Minimize(res.Prog, call, true,
+ 		func(p1 *prog.Prog, callIndex int) bool {
+-			crashed, err := ctx.testProg(p1, res.Duration, res.Opts)
++			crashed, _, err := ctx.testProg(p1, res.Duration, res.Opts)
+ 			if err != nil {
+ 				ctx.reproLog(0, "minimization failed with %v", err)
+ 				return false
+@@ -468,7 +479,7 @@ func (ctx *context) simplifyProg(res *Result) (*Result, error) {
+ 		if !simplify(&opts) {
+ 			continue
+ 		}
+-		crashed, err := ctx.testProg(res.Prog, res.Duration, opts)
++		crashed, command, err := ctx.testProg(res.Prog, res.Duration, opts)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -476,6 +487,7 @@ func (ctx *context) simplifyProg(res *Result) (*Result, error) {
+ 			continue
+ 		}
+ 		res.Opts = opts
++		res.Command = command
+ 		// Simplification successful, try extracting C repro.
+ 		res, err = ctx.extractC(res)
+ 		if err != nil {
+@@ -528,7 +540,7 @@ func (ctx *context) simplifyC(res *Result) (*Result, error) {
+ 	return res, nil
+ }
+ 
+-func (ctx *context) testProg(p *prog.Prog, duration time.Duration, opts csource.Options) (crashed bool, err error) {
++func (ctx *context) testProg(p *prog.Prog, duration time.Duration, opts csource.Options) (crashed bool, command string, err error) {
+ 	entry := prog.LogEntry{P: p}
+ 	if opts.Fault {
+ 		entry.Fault = true
+@@ -539,25 +551,25 @@ func (ctx *context) testProg(p *prog.Prog, duration time.Duration, opts csource.
+ }
+ 
+ func (ctx *context) testProgs(entries []*prog.LogEntry, duration time.Duration, opts csource.Options) (
+-	crashed bool, err error) {
++	crashed bool, command string, err error) {
+ 	inst := <-ctx.instances
+ 	if inst == nil {
+-		return false, fmt.Errorf("all VMs failed to boot")
++		return false, "", fmt.Errorf("all VMs failed to boot")
+ 	}
+ 	defer ctx.returnInstance(inst)
+ 	if len(entries) == 0 {
+-		return false, fmt.Errorf("no programs to execute")
++		return false, "", fmt.Errorf("no programs to execute")
+ 	}
+ 
+ 	pstr := encodeEntries(entries)
+ 	progFile, err := osutil.WriteTempFile(pstr)
+ 	if err != nil {
+-		return false, err
++		return false, "", err
+ 	}
+ 	defer os.Remove(progFile)
+ 	vmProgFile, err := inst.Copy(progFile)
+ 	if err != nil {
+-		return false, fmt.Errorf("failed to copy to VM: %v", err)
++		return false, "", fmt.Errorf("failed to copy to VM: %v", err)
+ 	}
+ 
+ 	if !opts.Fault {
+@@ -575,7 +587,7 @@ func (ctx *context) testProgs(entries []*prog.LogEntry, duration time.Duration,
+ 		program += "]"
+ 	}
+ 
+-	command := instancePkg.ExecprogCmd(inst.execprogBin, inst.executorBin,
++	command = instancePkg.ExecprogCmd(inst.execprogBin, inst.executorBin,
+ 		ctx.cfg.TargetOS, ctx.cfg.TargetArch, opts.Sandbox, opts.Repeat,
+ 		opts.Threaded, opts.Collide, opts.Procs, -1, -1, vmProgFile)
+ 	ctx.reproLog(2, "testing program (duration=%v, %+v): %s", duration, opts, program)
+@@ -594,49 +606,63 @@ func (ctx *context) testCProg(p *prog.Prog, duration time.Duration, opts csource
+ 	}
+ 	defer os.Remove(bin)
+ 	ctx.reproLog(2, "testing compiled C program (duration=%v, %+v): %s", duration, opts, p)
+-	crashed, err = ctx.testBin(bin, duration)
++	crashed, _, err = ctx.testBin(bin, duration)
+ 	if err != nil {
+ 		return false, err
+ 	}
+ 	return crashed, nil
+ }
+ 
+-func (ctx *context) testBin(bin string, duration time.Duration) (crashed bool, err error) {
++func (ctx *context) testBin(bin string, duration time.Duration) (crashed bool, command string, err error) {
+ 	inst := <-ctx.instances
+ 	if inst == nil {
+-		return false, fmt.Errorf("all VMs failed to boot")
++		return false, bin, fmt.Errorf("all VMs failed to boot")
+ 	}
+ 	defer ctx.returnInstance(inst)
+ 
+ 	bin, err = inst.Copy(bin)
+ 	if err != nil {
+-		return false, fmt.Errorf("failed to copy to VM: %v", err)
++		return false, bin, fmt.Errorf("failed to copy to VM: %v", err)
+ 	}
+ 	return ctx.testImpl(inst.Instance, bin, duration)
+ }
+ 
+-func (ctx *context) testImpl(inst *vm.Instance, command string, duration time.Duration) (crashed bool, err error) {
++func (ctx *context) testImpl(inst *vm.Instance, command string, duration time.Duration) (crashed bool, commands string, err error) {
+ 	outc, errc, err := inst.Run(duration, nil, command)
+ 	if err != nil {
+-		return false, fmt.Errorf("failed to run command in VM: %v", err)
++		return false, command, fmt.Errorf("failed to run command in VM: %v", err)
+ 	}
+ 	rep := inst.MonitorExecution(outc, errc, ctx.reporter,
+-		vm.ExitTimeout|vm.ExitNormal|vm.ExitError)
++		vm.ExitTimeout|vm.ExitNormal|vm.ExitError, time.Now(), -1)
+ 	if rep == nil {
+ 		ctx.reproLog(2, "program did not crash")
+-		return false, nil
++		return false, command, nil
+ 	}
+ 	if rep.Suppressed {
+ 		ctx.reproLog(2, "suppressed program crash: %v", rep.Title)
+-		return false, nil
++		return false, command, nil
+ 	}
+ 	if ctx.crashType == report.MemoryLeak && rep.Type != report.MemoryLeak {
+ 		ctx.reproLog(2, "not a leak crash: %v", rep.Title)
+-		return false, nil
++		return false, command, nil
++	}
++	// ctx.report = rep
++	// ctx.reproLog(2, "program crashed: %v", rep.Title)
++
++	if !AlreadyReproCrash[string(rep.Title)] {
++		ctx.reproLog(2, "program get new crash: %v", rep.Title)
++		if strings.Contains(string(rep.Title), TargetNewCrash) {
++			ctx.reproLog(2, "program get target crash: %v", TargetNewCrash)
++			ctx.report = rep
++			return true, command, nil
++		} else {
++			ctx.reproLog(2, "program get other new crash: %v", rep.Title)
++			return false, command, nil
++		}
++	} else {
++		ctx.reproLog(2, "program get old crash: %v", rep.Title)
++		return false, command, nil
+ 	}
+-	ctx.report = rep
+-	ctx.reproLog(2, "program crashed: %v", rep.Title)
+-	return true, nil
+ }
+ 
+ func (ctx *context) returnInstance(inst *instance) {
+diff --git a/pkg/rpctype/rpctype.go b/pkg/rpctype/rpctype.go
+index fcc01a99a..5c4576874 100644
+--- a/pkg/rpctype/rpctype.go
++++ b/pkg/rpctype/rpctype.go
+@@ -128,3 +128,32 @@ type RunTestDoneArgs struct {
+ 	Info   []*ipc.ProgInfo
+ 	Error  string
+ }
++
++type ProgQueue struct {
++	Length   int
++	Prog     []byte
++	NOfCalls int
++	PocProg  []byte
++}
++
++type GetQueueLenArgs struct {
++	Flag int
++}
++
++type GetQueueLenRes struct {
++	Length int
++}
++
++type FuzzerSignal struct {
++	Signal string
++}
++
++type GetCallsFromFuzzerArgs struct {
++	EnabledCalls map[string][]int
++	Sandbox      string
++}
++
++type GetMutateSimilarityArgs struct {
++	MutatePorg []byte
++}
++
+diff --git a/prog/encoding.go b/prog/encoding.go
+index 6bded49d5..f1d6a33b4 100644
+--- a/prog/encoding.go
++++ b/prog/encoding.go
+@@ -6,10 +6,13 @@ package prog
+ import (
+ 	"bufio"
+ 	"bytes"
++	"encoding/binary"
+ 	"encoding/hex"
+ 	"fmt"
+ 	"strconv"
+ 	"strings"
++
++	"github.com/google/syzkaller/pkg/log"
+ )
+ 
+ // String generates a very compact program description (mostly for debug output).
+@@ -54,6 +57,256 @@ type serializer struct {
+ 	verbose bool
+ }
+ 
++func (target *Target) ReadAddr(data []byte, pIndex *int) uint64 {
++	addr := target.ReadQWord(data, pIndex)
++	*pIndex -= 8
++	return addr
++}
++
++func (target *Target) ReadQWord(data []byte, pIndex *int) uint64 {
++	res := target.ReadData(data, 8, pIndex)
++	num := binary.LittleEndian.Uint64(res)
++	return num
++}
++
++func (target *Target) ReadData(data []byte, size uint64, pIndex *int) []byte {
++	//log.Logf(0, "readData pos: %d size: %d len: %d\n", *pIndex, size, len(data))
++	size_with_margin := (int(size) + 7) / 8 * 8
++	res := data[*pIndex : *pIndex+size_with_margin]
++	*pIndex += size_with_margin
++	return res
++}
++
++/*
++func (target *Target) Do(deep *int, doWhat int, num1 *uint64, num2 *uint64, arg *Arg, data interface{}) {
++	var pInfo *[]PointerInfo
++	var indexOfArgs uint64
++	var indexOfCurrentArgs uint64
++	var addr *uint64
++	var is_pointer uint64
++	var res ResData
++	var ok bool
++	//log.Logf(0, "Enter Do deep: %d doWhat: %d num1: %x num2: %x\n", *deep, doWhat, *num1, *num2)
++	if doWhat == MakePInfo {
++		pInfo, ok = data.(*[]PointerInfo)
++		if !ok {
++			return
++		}
++		indexOfArgs = *num1
++		indexOfCurrentArgs = *num2
++		(*pInfo)[*deep].IndexOfArgs = int(indexOfArgs)
++	}
++	if doWhat == UpdateProg {
++		res, ok = data.(ResData)
++		if !ok {
++			return
++		}
++		addr = num1
++		is_pointer = *num2
++	}
++	switch (*arg).(type) {
++	case *ConstArg:
++		if doWhat == UpdateProg {
++			if is_pointer != 0 {
++				if v, ok := res.ResPointer[*addr]; ok {
++					//log.Logf(0, "ConstArg addr: %x val: %#v\n", addr, v)
++					val := binary.LittleEndian.Uint64(v)
++					(*arg).(*ConstArg).Val = val
++				}
++				//log.Logf(0, "ConstArg addr: %x val: %x size: %v\n", *addr, (*arg).(*ConstArg).Val, (*arg).(*ConstArg).Size())
++				*addr += (*arg).(*ConstArg).Size()
++			} else {
++				size := target.ReadQWord(res.ResCall, deep)
++				data := target.ReadData(res.ResCall, size, deep)
++				val := binary.LittleEndian.Uint64(data)
++				(*arg).(*ConstArg).Val = val
++				//log.Logf(0, "ConstArg addr: %x val: %x size: %v\n", *addr, (*arg).(*ConstArg).Val, (*arg).(*ConstArg).Size())
++			}
++		}
++		break
++	case *ResultArg:
++		if doWhat == UpdateProg {
++			if is_pointer != 0 {
++				if v, ok := res.ResPointer[*addr]; ok {
++					val := binary.LittleEndian.Uint64(v)
++					(*arg).(*ResultArg).Val = val
++				}
++				//log.Logf(0, "ResultArg addr: %x val: %x size: %v\n", *addr, (*arg).(*ResultArg).Val, (*arg).(*ResultArg).Size())
++				*addr += (*arg).(*ResultArg).Size()
++			} else {
++				size := target.ReadQWord(res.ResCall, deep)
++				data := target.ReadData(res.ResCall, size, deep)
++				val := binary.LittleEndian.Uint64(data)
++				(*arg).(*ResultArg).Val = val
++				//log.Logf(0, "ResultArg addr: %x val: %x size: %v\n", *addr, (*arg).(*ResultArg).Val, (*arg).(*ResultArg).Size())
++			}
++		}
++		break
++	case *PointerArg:
++		var val uint64
++		if doWhat == UpdateProg {
++			var NewAddr uint64
++			var isPointer uint64
++
++			if is_pointer != 0 {
++				if v, ok := res.ResPointer[*addr]; ok {
++					val := binary.LittleEndian.Uint64(v)
++					log.Logf(0, "Address %x, val %x\n", (*arg).(*PointerArg).Address, val)
++					if (*arg).(*PointerArg).Address > 0x20000000 {
++						(*arg).(*PointerArg).Address = val - 0x20000000
++					}
++				}
++			} else {
++				size := target.ReadQWord(res.ResCall, deep)
++				data := target.ReadData(res.ResCall, size, deep)
++				val = binary.LittleEndian.Uint64(data)
++			}
++			NewAddr = 0x20000000 + (*arg).(*PointerArg).Address
++			if is_pointer == 0 && NewAddr != val {
++				log.Logf(0, "Failed to parse PointerArg, expected %x, but got %x\n", val, NewAddr)
++				return
++			}
++			isPointer = 1
++			//log.Logf(0, "PointerArg addr: %x\n", 0x20000000+(*arg).(*PointerArg).Address)
++			target.Do(deep, doWhat, &NewAddr, &isPointer, &(*arg).(*PointerArg).Res, data)
++			*addr += (*arg).(*PointerArg).Size()
++		}
++		if doWhat == MakePInfo {
++			var newDeep int
++			var isPointer uint64
++			isPointer = 1
++			res := (*arg).(*PointerArg).Res
++			count := (*pInfo)[*deep].NumOfChildren
++			for i := *deep + 1; i < 625; i++ {
++				if (*pInfo)[i].IndexOfArgs == 0 {
++					newDeep = i
++					break
++				}
++			}
++			(*pInfo)[*deep].Children[count] = newDeep
++			(*pInfo)[*deep].NumOfChildren = count + 1
++			target.Do(&newDeep, doWhat, &indexOfCurrentArgs, &isPointer, &res, pInfo)
++		}
++		break
++	case *DataArg:
++		if doWhat == UpdateProg {
++			if is_pointer != 0 {
++				if _, ok := res.ResPointer[*addr]; ok {
++					copy((*arg).(*DataArg).data, res.ResPointer[*addr])
++				}
++				//log.Logf(0, "DataArg addr: %x val: %v size: %v\n", addr, (*arg).(*DataArg).data, (*arg).(*DataArg).Size())
++				*addr += (*arg).(*DataArg).Size()
++			} else {
++				size := target.ReadQWord(res.ResCall, deep)
++				data := target.ReadData(res.ResCall, size, deep)
++				copy((*arg).(*DataArg).data, data)
++				//log.Logf(0, "DataArg addr: %x val: %v size: %v\n", addr, (*arg).(*DataArg).data, (*arg).(*DataArg).Size())
++			}
++		}
++		break
++	case *GroupArg:
++		//log.Logf(0, "Enter GroupArg")
++		if doWhat == UpdateProg {
++			for i := 0; i < len((*arg).(*GroupArg).Inner); i++ {
++				target.Do(deep, doWhat, num1, num2, &(*arg).(*GroupArg).Inner[i], data)
++			}
++		}
++		if doWhat == MakePInfo {
++			var newIndexOfCurrentArgs uint64
++			for i, a := range (*arg).(*GroupArg).Inner {
++				newIndexOfCurrentArgs = indexOfCurrentArgs + uint64(i)
++				target.Do(deep, doWhat, &indexOfArgs, &newIndexOfCurrentArgs, &a, pInfo)
++			}
++		}
++		//log.Logf(0, "Exit GroupArg")
++		break
++	case *UnionArg:
++		//log.Logf(0, "UnionArg")
++		if doWhat == UpdateProg {
++			target.Do(deep, doWhat, num1, num2, &(*arg).(*UnionArg).Option, data)
++		}
++		if doWhat == MakePInfo {
++			target.Do(deep, doWhat, &indexOfArgs, &indexOfCurrentArgs, &(*arg).(*UnionArg).Option, pInfo)
++		}
++		break
++	default:
++		//log.Logf(0, "Nontype")
++		break
++	}
++}*/
++
++func (target *Target) ParseArgType(tab string, arg *Arg, export *[]byte) {
++	last := len(*export) - 1
++	if (*export)[last] != '{' {
++		*export = append(*export, ',')
++	}
++	switch (*arg).(type) {
++	case *ConstArg:
++		val := (*arg).(*ConstArg).Val
++		*export = append(*export, []byte("ConstArg(")...)
++		*export = append(*export, []byte(strconv.FormatUint((*arg).Size(), 10))...)
++		*export = append(*export, []byte("):")...)
++		*export = append(*export, []byte(strconv.FormatUint(val, 10))...)
++		//*export += "ConstArg\\(" + strconv.FormatUint(arg.Size(), 10) + "\\):" + strconv.FormatUint(val, 10)
++		log.Logf(0, "%s |ConstType %x\n", tab, val)
++	case *ResultArg:
++		val := (*arg).(*ResultArg).Val
++		//reg := (*arg).(*ResultArg).Res.Val
++		*export = append(*export, []byte("ResultArg(")...)
++		*export = append(*export, []byte(strconv.FormatUint((*arg).Size(), 10))...)
++		*export = append(*export, []byte("):")...)
++		//*export += "ResultArg\\(" + strconv.FormatUint(arg.Size(), 10) + "\\):"
++		/*if reg != "" {
++			*export = append(*export, []byte(reg)...)
++			//*export += reg
++		}*/
++		*export = append(*export, []byte(strconv.FormatUint(val, 10))...)
++		//*export += strconv.FormatUint(val, 10)
++		log.Logf(0, "%s |ResultArg %x\n", tab, val)
++	case *PointerArg:
++		*export = append(*export, []byte("PointerArg(")...)
++		*export = append(*export, []byte(strconv.FormatUint((*arg).Size(), 10))...)
++		*export = append(*export, []byte("):{")...)
++		//*export += "PointerArg\\(" + strconv.FormatUint(arg.Size(), 10) + "\\):\\{"
++		val := (*arg).(*PointerArg).Address
++		log.Logf(0, "%s |PointerArg %x\n", tab, val)
++		target.ParseArgType(tab+" | ", &(*arg).(*PointerArg).Res, export)
++		//*export += "\\}"
++		*export = append(*export, []byte("}")...)
++	case *DataArg:
++		val := (*arg).(*DataArg).data
++		*export = append(*export, []byte("DataArg(")...)
++		*export = append(*export, []byte(strconv.FormatUint((*arg).Size(), 10))...)
++		*export = append(*export, []byte("):")...)
++		*export = append(*export, val...)
++		//*export += "DataArg\\(" + strconv.FormatUint(arg.Size(), 10) + "\\):" + string(val)
++		log.Logf(0, "%s |DataArg %s\n", tab, val)
++	case *GroupArg:
++		*export = append(*export, []byte("GroupArg(")...)
++		*export = append(*export, []byte(strconv.FormatUint((*arg).Size(), 10))...)
++		*export = append(*export, []byte("):{")...)
++		//*export += "GroupArg\\(" + strconv.FormatUint(arg.Size(), 10) + "\\):\\{"
++		log.Logf(0, "%s |GroupArg \n", tab)
++		for i := 0; i < len((*arg).(*GroupArg).Inner); i++ {
++			target.ParseArgType(tab+" | ", &(*arg).(*GroupArg).Inner[i], export)
++		}
++		*export = append(*export, []byte("}")...)
++		//*export += "\\}"
++	case *UnionArg:
++		*export = append(*export, []byte("UnionArg(")...)
++		*export = append(*export, []byte(strconv.FormatUint((*arg).Size(), 10))...)
++		*export = append(*export, []byte("):{")...)
++		//*export += "UnionArg\\(" + strconv.FormatUint(arg.Size(), 10) + "\\):\\{"
++		log.Logf(0, "%s |UnionArg\n", tab)
++		target.ParseArgType(tab+" | ", &(*arg).(*UnionArg).Option, export)
++		*export = append(*export, []byte("}")...)
++		//*export += "\\}"
++	default:
++		log.Logf(0, "%s |NoneType", tab)
++	}
++
++}
++
+ func (ctx *serializer) printf(text string, args ...interface{}) {
+ 	fmt.Fprintf(ctx.buf, text, args...)
+ }
+@@ -262,6 +515,7 @@ func (p *parser) parseProg() (*Prog, error) {
+ 		}
+ 		meta := p.target.SyscallMap[name]
+ 		if meta == nil {
++			MissingSyscall = name
+ 			return nil, fmt.Errorf("unknown syscall %v", name)
+ 		}
+ 		c := &Call{
+diff --git a/prog/generation.go b/prog/generation.go
+index 1ceda4820..0997d250d 100644
+--- a/prog/generation.go
++++ b/prog/generation.go
+@@ -16,7 +16,7 @@ func (target *Target) Generate(rs rand.Source, ncalls int, ct *ChoiceTable) *Pro
+ 	r := newRand(target, rs)
+ 	s := newState(target, ct, nil)
+ 	for len(p.Calls) < ncalls {
+-		calls := r.generateCall(s, p, len(p.Calls))
++		calls := r.generateCall(s, p, len(p.Calls), "")
+ 		for _, c := range calls {
+ 			s.analyze(c)
+ 			p.Calls = append(p.Calls, c)
+diff --git a/prog/minimization.go b/prog/minimization.go
+index 9a71dd067..e3f64e0cb 100644
+--- a/prog/minimization.go
++++ b/prog/minimization.go
+@@ -31,7 +31,7 @@ func Minimize(p0 *Prog, callIndex0 int, crash bool, pred0 func(*Prog, int) bool)
+ 	p0, callIndex0 = removeCalls(p0, callIndex0, crash, pred)
+ 
+ 	// Try to minimize individual args.
+-	for i := 0; i < len(p0.Calls); i++ {
++	for i := NOfCalls; i < len(p0.Calls); i++ {
+ 		ctx := &minimizeArgsCtx{
+ 			target:     p0.Target,
+ 			p0:         &p0,
+@@ -60,7 +60,7 @@ func Minimize(p0 *Prog, callIndex0 int, crash bool, pred0 func(*Prog, int) bool)
+ }
+ 
+ func removeCalls(p0 *Prog, callIndex0 int, crash bool, pred func(*Prog, int) bool) (*Prog, int) {
+-	for i := len(p0.Calls) - 1; i >= 0; i-- {
++	for i := len(p0.Calls) - 1; i >= NOfCalls; i-- {
+ 		if i == callIndex0 {
+ 			continue
+ 		}
+diff --git a/prog/mutation.go b/prog/mutation.go
+index 62acba586..b3fc2ff77 100644
+--- a/prog/mutation.go
++++ b/prog/mutation.go
+@@ -34,19 +34,24 @@ func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable, corpus []*Pro
+ 		corpus: corpus,
+ 	}
+ 	for stop, ok := false, false; !stop; stop = ok && len(p.Calls) != 0 && r.oneOf(3) {
++		if len(p.Calls) == NOfCalls {
++			ctx.insertCallAtEndCus()
++		}
+ 		switch {
+ 		case r.oneOf(5):
+ 			// Not all calls have anything squashable,
+ 			// so this has lower priority in reality.
+-			ok = ctx.squashAny()
++			ok = ctx.squashAnyCus()
+ 		case r.nOutOf(1, 100):
+-			ok = ctx.splice()
++			ok = ctx.spliceCus()
+ 		case r.nOutOf(20, 31):
+-			ok = ctx.insertCall()
++			ok = ctx.insertCallCus()
+ 		case r.nOutOf(10, 11):
+-			ok = ctx.mutateArg()
++			ok = ctx.mutateArgCus()
+ 		default:
+-			ok = ctx.removeCall()
++			if len(p.Calls) > NOfCalls {
++				ok = ctx.removeCallCus()
++			}
+ 		}
+ 	}
+ 	for _, c := range p.Calls {
+@@ -140,7 +145,7 @@ func (ctx *mutator) insertCall() bool {
+ 		c = p.Calls[idx]
+ 	}
+ 	s := analyze(ctx.ct, ctx.corpus, p, c)
+-	calls := r.generateCall(s, p, idx)
++	calls := r.generateCall(s, p, idx, "")
+ 	p.insertBefore(c, calls)
+ 	for len(p.Calls) > ctx.ncalls {
+ 		p.removeCall(idx)
+diff --git a/prog/mutation_ditto.go b/prog/mutation_ditto.go
+new file mode 100644
+index 000000000..5cfa9aaf0
+--- /dev/null
++++ b/prog/mutation_ditto.go
+@@ -0,0 +1,465 @@
++package prog
++
++import (
++	"fmt"
++	"strings"
++)
++
++var NOfCalls = 0
++var PocProg string
++var ExecutePoCOnly = true
++var LastGroupArg = ""
++var LastArg = ""
++var MissingSyscall = ""
++var CriticalSyscall = ""
++var CriticalSysSeq = ""
++
++// Activation and Diffusion Mutation
++func (ctx *mutator) spliceCus() bool {
++	p := ctx.p
++	if !containPoC(p.Serialize()) {
++		return ctx.spliceDiffusion()
++	}
++	return ctx.spliceActivation()
++}
++
++func (ctx *mutator) spliceActivation() bool {
++	p, r := ctx.p, ctx.r
++	if len(ctx.corpus) == 0 || len(p.Calls)-NOfCalls <= 0 || len(p.Calls) >= ctx.ncalls {
++		return false
++	}
++	p0 := ctx.corpus[r.Intn(len(ctx.corpus))]
++	for i := 0; i < 10; i++ {
++		if containCriticalSys(p0.Serialize()) {
++			if containCriticalSysSeq(p0) {
++				break
++			}
++		}
++		p0 = ctx.corpus[r.Intn(len(ctx.corpus))]
++	}
++	p0c := p0.Clone()
++	idx := r.Intn(len(p.Calls)-NOfCalls) + NOfCalls
++	p.Calls = append(p.Calls[:idx], append(p0c.Calls, p.Calls[idx:]...)...)
++	for i := len(p.Calls) - 1; i >= ctx.ncalls; i-- {
++		p.removeCall(i)
++	}
++	return true
++}
++
++func (ctx *mutator) spliceDiffusion() bool {
++	p, r := ctx.p, ctx.r
++	if len(ctx.corpus) == 0 || len(p.Calls) == 0 || len(p.Calls) >= ctx.ncalls {
++		return false
++	}
++	p0 := ctx.corpus[r.Intn(len(ctx.corpus))]
++	for i := 0; i < 10; i++ {
++		if containCriticalSys(p0.Serialize()) {
++			if containCriticalSysSeq(p0) {
++				break
++			}
++		}
++		p0 = ctx.corpus[r.Intn(len(ctx.corpus))]
++	}
++	p0c := p0.Clone()
++	idx := r.Intn(len(p.Calls))
++	p.Calls = append(p.Calls[:idx], append(p0c.Calls, p.Calls[idx:]...)...)
++	for i := len(p.Calls) - 1; i >= ctx.ncalls; i-- {
++		p.removeCall(i)
++	}
++	return true
++}
++
++// Picks a random complex pointer and squashes its arguments into an ANY.
++// Subsequently, if the ANY contains blobs, mutates a random blob.
++func (ctx *mutator) squashAnyCus() bool {
++	p := ctx.p
++	if !containPoC(p.Serialize()) {
++		return ctx.squashAnyDiffusion()
++	}
++	return ctx.squashAnyActivation()
++}
++
++func (ctx *mutator) squashAnyDiffusion() bool {
++	return ctx.squashAny()
++}
++
++func (ctx *mutator) squashAnyActivation() bool {
++	p, r := ctx.p, ctx.r
++	complexPtrs := p.complexPtrsActivation()
++	if len(complexPtrs) == 0 {
++		return false
++	}
++	ptr := complexPtrs[r.Intn(len(complexPtrs))]
++	if !p.Target.isAnyPtr(ptr.Type()) {
++		p.Target.squashPtr(ptr, true)
++	}
++	var blobs []*DataArg
++	var bases []*PointerArg
++	ForeachSubArg(ptr, func(arg Arg, ctx *ArgCtx) {
++		if data, ok := arg.(*DataArg); ok && arg.Type().Dir() != DirOut {
++			blobs = append(blobs, data)
++			bases = append(bases, ctx.Base)
++		}
++	})
++	if len(blobs) == 0 {
++		return false
++	}
++	idx := r.Intn(len(blobs))
++	arg := blobs[idx]
++	base := bases[idx]
++	baseSize := base.Res.Size()
++	arg.data = mutateData(r, arg.Data(), 0, maxBlobLen)
++	// Update base pointer if size has increased.
++	if baseSize < base.Res.Size() {
++		s := analyze(ctx.ct, ctx.corpus, p, p.Calls[0])
++		newArg := r.allocAddr(s, base.Type(), base.Res.Size(), base.Res)
++		*base = *newArg
++	}
++	return true
++}
++
++func (ctx *mutator) insertCallAtEndCus() bool {
++	p := ctx.p
++	if !containPoC(p.Serialize()) {
++		return ctx.insertCallAtEndDiffusion()
++	}
++	return ctx.insertCallAtEndActivation()
++}
++
++func (ctx *mutator) insertCallAtEndDiffusion() bool {
++	return true
++}
++
++func (ctx *mutator) insertCallAtEndActivation() bool {
++	p, r := ctx.p, ctx.r
++	if len(p.Calls) >= ctx.ncalls {
++		return false
++	}
++	idx := len(p.Calls)
++	var c *Call
++	if idx < len(p.Calls) {
++		c = p.Calls[idx]
++	}
++	s := analyze(ctx.ct, ctx.corpus, p, c)
++	calls := r.generateCall(s, p, idx, CriticalSyscall)
++	p.insertBefore(c, calls)
++	for len(p.Calls) > ctx.ncalls {
++		p.removeCall(idx)
++	}
++	return true
++}
++
++func (ctx *mutator) insertCallCus() bool {
++	p := ctx.p
++	if !containPoC(p.Serialize()) {
++		return ctx.insertCallDiffusion()
++	}
++	return ctx.insertCallActivation()
++}
++
++func (ctx *mutator) insertCallDiffusion() bool {
++	p, r := ctx.p, ctx.r
++	if len(p.Calls) >= ctx.ncalls {
++		return false
++	}
++	idx := r.biasedRand(len(p.Calls)+1, 5)
++	var c *Call
++	if idx < len(p.Calls) {
++		c = p.Calls[idx]
++	}
++	s := analyze(ctx.ct, ctx.corpus, p, c)
++	calls := r.generateCall(s, p, idx, CriticalSyscall)
++	p.insertBefore(c, calls)
++	for len(p.Calls) > ctx.ncalls {
++		p.removeCall(idx)
++	}
++	return true
++}
++
++func (ctx *mutator) insertCallActivation() bool {
++	p, r := ctx.p, ctx.r
++	if len(p.Calls) >= ctx.ncalls {
++		return false
++	}
++	idx := r.biasedRand(len(p.Calls)+1-NOfCalls, 5) + NOfCalls
++
++	if NOfCalls == len(p.Calls) {
++		idx = len(p.Calls)
++	}
++	var c *Call
++	if idx < len(p.Calls) {
++		c = p.Calls[idx]
++	}
++	s := analyze(ctx.ct, ctx.corpus, p, c)
++	calls := r.generateCall(s, p, idx, CriticalSyscall)
++	p.insertBefore(c, calls)
++	for len(p.Calls) > ctx.ncalls {
++		p.removeCall(idx)
++	}
++	return true
++}
++
++// Removes a random call from program.
++func (ctx *mutator) removeCallCus() bool {
++	p := ctx.p
++	if !containPoC(p.Serialize()) {
++		return ctx.removeCallDiffusion()
++	}
++	return ctx.removeCallActivation()
++}
++
++func (ctx *mutator) removeCallDiffusion() bool {
++	p, r := ctx.p, ctx.r
++	if len(p.Calls) == 0 {
++		return false
++	}
++	idx := r.Intn(len(p.Calls))
++	rmcall := p.Calls[idx]
++	for i := 0; i < 10; i++ {
++		if !isCriticalSys(rmcall) {
++			break
++		}
++		idx = r.Intn(len(p.Calls))
++		rmcall = p.Calls[idx]
++	}
++	p.removeCall(idx)
++	return true
++}
++
++func (ctx *mutator) removeCallActivation() bool {
++	p, r := ctx.p, ctx.r
++	if len(p.Calls) == 0 {
++		return false
++	}
++	idx := r.Intn(len(p.Calls)-NOfCalls) + NOfCalls
++	rmcall := p.Calls[idx]
++	for i := 0; i < 10; i++ {
++		if !isCriticalSys(rmcall) {
++			break
++		}
++		idx = r.Intn(len(p.Calls)-NOfCalls) + NOfCalls
++		rmcall = p.Calls[idx]
++	}
++	p.removeCall(idx)
++	return true
++}
++
++// Mutate an argument of a random call.
++func (ctx *mutator) mutateArgCus() bool {
++	p := ctx.p
++	if !containPoC(p.Serialize()) {
++		return ctx.mutateArgDiffusion()
++	}
++	return ctx.mutateArgActivation()
++}
++
++func (ctx *mutator) mutateArgDiffusion() bool {
++	p, r := ctx.p, ctx.r
++	if len(p.Calls) == 0 {
++		return false
++	}
++	idx := chooseCall(p, r)
++	mucall := p.Calls[idx]
++	if idx < 0 {
++		return false
++	}
++	for i := 0; i < 10; i++ {
++		if isCriticalSys(mucall) {
++			break
++		}
++		idx = chooseCall(p, r)
++		mucall = p.Calls[idx]
++	}
++	c := p.Calls[idx]
++	updateSizes := true
++	for stop, ok := false, false; !stop; stop = ok && r.oneOf(3) {
++		ok = true
++		ma := &mutationArgs{target: p.Target}
++		ForeachArg(c, ma.collectArg)
++		if len(ma.args) == 0 {
++			return false
++		}
++		s := analyze(ctx.ct, ctx.corpus, p, c)
++		chosenIdx := randomChoice(ma.priorities, r)
++		arg, argCtx := ma.args[chosenIdx], ma.ctxes[chosenIdx]
++		calls, ok1 := p.Target.mutateArg(r, s, arg, argCtx, &updateSizes)
++		if !ok1 {
++			ok = false
++			continue
++		}
++		p.insertBefore(c, calls)
++		idx += len(calls)
++		for len(p.Calls) > ctx.ncalls {
++			idx--
++			p.removeCall(idx)
++		}
++		if idx < 0 || idx >= len(p.Calls) || p.Calls[idx] != c {
++			panic(fmt.Sprintf("wrong call index: idx=%v calls=%v p.Calls=%v ncalls=%v",
++				idx, len(calls), len(p.Calls), ctx.ncalls))
++		}
++		if updateSizes {
++			p.Target.assignSizesCall(c)
++		}
++	}
++	return true
++}
++
++func (ctx *mutator) mutateArgActivation() bool {
++	start := NOfCalls
++	p, r := ctx.p, ctx.r
++	if len(p.Calls) == 0 {
++		return false
++	}
++	idx := chooseCallActivation(p, r, start)
++	mucall := p.Calls[idx]
++	if idx < 0 {
++		return false
++	}
++	for i := 0; i < 10; i++ {
++		if isCriticalSys(mucall) {
++			break
++		}
++		idx = chooseCallActivation(p, r, start)
++		mucall = p.Calls[idx]
++	}
++	c := p.Calls[idx]
++	updateSizes := true
++	for stop, ok := false, false; !stop; stop = ok && r.oneOf(3) {
++		ok = true
++		ma := &mutationArgs{target: p.Target}
++		ForeachArg(c, ma.collectArg)
++		if len(ma.args) == 0 {
++			return false
++		}
++		s := analyze(ctx.ct, ctx.corpus, p, c)
++		chosenIdx := randomChoice(ma.priorities, r)
++		arg, argCtx := ma.args[chosenIdx], ma.ctxes[chosenIdx]
++		calls, ok1 := p.Target.mutateArg(r, s, arg, argCtx, &updateSizes)
++		if !ok1 {
++			ok = false
++			continue
++		}
++		p.insertBefore(c, calls)
++		idx += len(calls)
++		for len(p.Calls) > ctx.ncalls {
++			idx--
++			p.removeCall(idx)
++		}
++		if idx < 0 || idx >= len(p.Calls) || p.Calls[idx] != c {
++			panic(fmt.Sprintf("wrong call index: idx=%v calls=%v p.Calls=%v ncalls=%v",
++				idx, len(calls), len(p.Calls), ctx.ncalls))
++		}
++		if updateSizes {
++			p.Target.assignSizesCall(c)
++		}
++	}
++	return true
++}
++
++// Select a call based on the complexity of the arguments.
++func chooseCallActivation(p *Prog, r *randGen, start int) int {
++	var callPriorities []float64
++	noArgs := true
++
++	for i, c := range p.Calls {
++		if i < start {
++			continue
++		}
++		totalPrio := float64(0)
++		ForeachArg(c, func(arg Arg, ctx *ArgCtx) {
++			prio, stopRecursion := arg.Type().getMutationPrio(p.Target, arg, false)
++			totalPrio += prio
++			ctx.Stop = stopRecursion
++		})
++		callPriorities = append(callPriorities, totalPrio)
++		if len(c.Args) > 0 {
++			noArgs = false
++		}
++	}
++
++	// Calls without arguments.
++	if noArgs {
++		return -1
++	}
++	return start + randomChoice(callPriorities, r)
++}
++
++func (p *Prog) complexPtrsActivation() (res []*PointerArg) {
++	for i, c := range p.Calls {
++		if i < NOfCalls {
++			continue
++		}
++		ForeachArg(c, func(arg Arg, ctx *ArgCtx) {
++			if ptrArg, ok := arg.(*PointerArg); ok && p.Target.isComplexPtr(ptrArg) {
++				res = append(res, ptrArg)
++				ctx.Stop = true
++			}
++		})
++	}
++	return
++}
++
++func containPoC(prog []byte) bool {
++	if !ExecutePoCOnly {
++		return false
++	}
++	sProg := string(prog)
++	if len(sProg) < len(PocProg) {
++		return false
++	}
++	if strings.Compare(PocProg, sProg[:len(PocProg)]) == 0 {
++		return true
++	}
++	return false
++}
++
++// Determine if the prog program contains critical syscalls.
++func containCriticalSys(prog []byte) bool {
++	sProg := string(prog)
++	CriticalSyscall_splice := strings.Split(CriticalSyscall, "\n")
++	for _, crisys := range CriticalSyscall_splice {
++		if len(crisys) > 0 {
++			if strings.Contains(sProg, crisys) {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++// Determine if syscall is a critical syscall.
++func isCriticalSys(rmcall *Call) bool {
++	rmcall_code := rmcall.Meta.Name
++	if strings.Contains(rmcall_code, "$") {
++		rmcall_code = strings.Split(rmcall_code, "$")[0]
++	}
++	if len(CriticalSyscall) > 0 {
++		if strings.Contains(CriticalSyscall, rmcall_code) {
++			return true
++		}
++	}
++	return false
++}
++
++// Determine if the prog program contains a critical syscall sequence.
++func containCriticalSysSeq(prog *Prog) bool {
++	scalls := prog.Calls
++	rawscalls := ""
++	for _, scall := range scalls {
++		scall_name := scall.Meta.Name
++		scall_code := scall_name
++		if strings.Contains(scall_name, "$") {
++			scall_code = strings.Split(scall_name, "$")[0]
++		}
++		rawscalls = fmt.Sprintf("%s %s", rawscalls, scall_code)
++	}
++	CriticalSysSeq_splice := strings.Split(CriticalSysSeq, "\n")
++	for _, crisysseq := range CriticalSysSeq_splice {
++		if len(crisysseq) > 0 {
++			if strings.Contains(rawscalls, crisysseq) {
++				return true
++			}
++		}
++	}
++	return false
++}
+\ No newline at end of file
+diff --git a/prog/rand.go b/prog/rand.go
+index bf6d66e9a..11b16f826 100644
+--- a/prog/rand.go
++++ b/prog/rand.go
+@@ -14,6 +14,7 @@ import (
+ 
+ 	"github.com/google/syzkaller/pkg/ifuzz"
+ 	_ "github.com/google/syzkaller/pkg/ifuzz/generated" // pull in generated instruction descriptions
++	"github.com/google/syzkaller/pkg/log"
+ )
+ 
+ const (
+@@ -536,21 +537,36 @@ func (r *randGen) nOutOf(n, outOf int) bool {
+ 	return v < n
+ }
+ 
+-func (r *randGen) generateCall(s *state, p *Prog, insertionPoint int) []*Call {
++func (r *randGen) generateCall(s *state, p *Prog, insertionPoint int, CriticalSyscall string) []*Call {
+ 	idx := 0
+-	if s.ct == nil {
+-		idx = r.Intn(len(r.target.Syscalls))
+-	} else if insertionPoint <= 0 {
+-		idx = s.ct.enabledCalls[r.Intn(len(s.ct.enabledCalls))].ID
+-	} else {
+-		call := -1
+-		if len(p.Calls) != 0 {
+-			// Choosing the base call is based on the insertion point of the new calls sequence.
+-			call = p.Calls[r.Intn(insertionPoint)].Meta.ID
+-		}
+-		idx = s.ct.Choose(r.Rand, call)
+-	}
+ 	meta := r.target.Syscalls[idx]
++	
++	for i := 0; i < 5; i++ {
++		if s.ct == nil {
++			idx = r.Intn(len(r.target.Syscalls))
++		} else if insertionPoint <= 0 {
++			idx = s.ct.enabledCalls[r.Intn(len(s.ct.enabledCalls))].ID
++		} else {
++			call := -1
++			if len(p.Calls) != 0 {
++				// Choosing the base call is based on the insertion point of the new calls sequence.
++				call = p.Calls[r.Intn(insertionPoint)].Meta.ID
++			}
++			idx = s.ct.Choose(r.Rand, call)
++		}
++		meta = r.target.Syscalls[idx]
++		if len(CriticalSyscall) > 0 {
++			syscall_code := meta.Name
++			if strings.Contains(syscall_code, "$") {
++				syscall_code = strings.Split(syscall_code, "$")[0]
++			}
++			if strings.Contains(CriticalSyscall, syscall_code) {
++				break
++			}
++		} else {
++			break
++		}
++	}
+ 	return r.generateParticularCall(s, meta)
+ }
+ 
+@@ -700,7 +716,13 @@ func (a *ResourceType) generate(r *randGen, s *state) (arg Arg, calls []*Call) {
+ 			return
+ 		}
+ 	}
++	// Using previouse generated fd makes more sense for triggering PoC
++	arg = r.existingResource(s, a)
++	if arg != nil {
++		return
++	}
+ 	special := a.SpecialValues()
++	log.Logf(1, "No existingResource found, using SpecialValues: %x", special)
+ 	arg = MakeResultArg(a, nil, special[r.Intn(len(special))])
+ 	return
+ }
+diff --git a/prog/validation.go b/prog/validation.go
+index c8c030aa7..d6923aca4 100644
+--- a/prog/validation.go
++++ b/prog/validation.go
+@@ -95,6 +95,24 @@ func (ctx *validCtx) validateArg(arg Arg, typ Type) error {
+ 		return fmt.Errorf("bad arg type %#v, expect %#v", arg.Type(), typ)
+ 	}
+ 	ctx.args[arg] = true
++	switch arg.(type) {
++	case *ConstArg:
++		LastArg = arg.Type().Name()
++		break
++	case *ResultArg:
++		LastArg = arg.Type().Name()
++		break
++	case *PointerArg:
++		LastArg = arg.Type().Name()
++		break
++	case *DataArg:
++		LastArg = arg.Type().Name()
++		break
++	case *GroupArg:
++		LastGroupArg = arg.Type().Name()
++		break
++	default:
++	}
+ 	return arg.validate(ctx)
+ }
+ 
+@@ -206,6 +224,7 @@ func (arg *GroupArg) validate(ctx *validCtx) error {
+ 	default:
+ 		return fmt.Errorf("group arg %v has bad type %v", arg, typ.Name())
+ 	}
++	LastGroupArg = ""
+ 	return nil
+ }
+ 
+diff --git a/stringosim/.travis.yml b/stringosim/.travis.yml
+new file mode 100644
+index 000000000..030d5f973
+--- /dev/null
++++ b/stringosim/.travis.yml
+@@ -0,0 +1,11 @@
++language: go
++go:
++- 1.4
++- 1.5
++- 1.6
++- 1.7
++- 1.8
++- release
++
++script:
++- go test
+diff --git a/stringosim/LICENSE b/stringosim/LICENSE
+new file mode 100644
+index 000000000..5be742f21
+--- /dev/null
++++ b/stringosim/LICENSE
+@@ -0,0 +1,21 @@
++The MIT License (MIT)
++
++Copyright (c) 2016 dexyk
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in
++all copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++THE SOFTWARE.
+diff --git a/stringosim/README.md b/stringosim/README.md
+new file mode 100644
+index 000000000..c1ea6956d
+--- /dev/null
++++ b/stringosim/README.md
+@@ -0,0 +1,168 @@
++# stringosim
++
++The plan for this package is to have Go implementation of different string distance/similarity functions, like Levenshtein (normalized, weighted, Damerau), Jaro-Winkler, Jaccard index, Euclidean distance, Hamming distance...
++
++Currently it has implemented:
++ - Levenshtein
++ - Jaccard
++ - Hamming
++ - LCS
++ - Q-gram
++ - n-gram based Cosine distanc
++
++ Work in progress...
++
++## Import and installation
++
++To get the library just run:
++
++```shell
++    go get github.com/dexyk/stringosim
++```
++
++To use the library just import it in your code:
++
++```go
++    import "github.com/dexyk/stringosim"
++```
++
++To run the tests, go to the directory where stringosim package is installed and run:
++
++```shell
++    go test
++```
++
++## Usage
++
++Currently only Levenshtein, Jaccard, Hamming, LCS string, Q-gram and Cosine distances are implemented.
++
++#### Levenshtein
++
++Levenshtein distance can be calculated with default parameters (use DefaultSimilarityOptions) where cost of insert, delete and substitute operation are 1. You can also use it with other parameters by using SimilarityOptions type. Setting CaseInsensitive to true in SimilarityOptions the comparison will be done without considering character cases.
++
++Example:
++
++```go
++    fmt.Println(stringosim.Levenshtein([]rune("stringosim"), []rune("stingobim")))
++
++    fmt.Println(stringosim.Levenshtein([]rune("stringosim"), []rune("stingobim"),
++    stringosim.LevenshteinSimilarityOptions{
++        InsertCost:     3,
++        DeleteCost:     5,
++        SubstituteCost: 2,
++    }))
++
++    fmt.Println(stringosim.Levenshtein([]rune("stringosim"), []rune("STRINGOSIM"),
++    stringosim.LevenshteinSimilarityOptions{
++        InsertCost:      3,
++        DeleteCost:      4,
++        SubstituteCost:  5,
++        CaseInsensitive: true,
++    }))
++```
++
++#### Jaccard
++
++Jaccard distance can be calculated by setting the size of the n-gram which will be used for comparison. If the size is omitted the default value of 1 will be used.
++
++Example:
++
++```go
++    fmt.Println(stringosim.Jaccard([]rune("stringosim"), []rune("stingobim")))
++
++    fmt.Println(stringosim.Jaccard([]rune("stringosim"), []rune("stingobim"), []int{2}))
++
++    fmt.Println(stringosim.Jaccard([]rune("stringosim"), []rune("stingobim"), []int{3}))
++```
++
++#### Hamming
++
++Hamming distance can be calculated with options. Default function will calculate standard hamming distance with case sensitive option. It can be also used without case sensitive option.
++
++If the strings to compare have different lengths, the error will be returned.
++
++Example:
++
++```go
++    dis, _ := stringosim.Hamming([]rune("testing"), []rune("restink"))
++    fmt.Println(dis)
++
++    dis, _ = stringosim.Hamming([]rune("testing"), []rune("FESTING"), stringosim.HammingSimilarityOptions{
++        CaseInsensitive: true,
++    })
++    fmt.Println(dis)
++
++    _, err := stringosim.Hamming([]rune("testing"), []rune("testin"))
++    fmt.Println(err)
++```
++
++#### Longest Common Subsequence (LCS)
++
++LCS between two strings can be calculated with options. Default function will calculate the LCS with case insensitive option. It can be also used without case sensitive option.
++
++Example:
++
++```go
++    fmt.Println(stringosim.LCS([]rune("testing lcs algorithm"), []rune("another l c s example")))
++
++    fmt.Println(stringosim.LCS([]rune("testing lcs algorithm"), []rune("ANOTHER L C S EXAMPLE"),
++    stringosim.LCSSimilarityOptions{
++        CaseInsensitive: true,
++    }))
++```
++
++
++#### Jaro and Jaro-Winkler
++
++Jaro and Jaro-Winkler can be calculated with options: case insensitive, and specific values for Jaro-Winkler - threshold, p value and l value.
++
++Example:
++
++```go
++    fmt.Println(stringosim.Jaro([]rune("abaccbabaacbcb"), []rune("bababbcabbaaca")))
++    fmt.Println(stringosim.Jaro([]rune("abaccbabaacbcb"), []rune("ABABAbbCABbaACA"),
++    stringosim.JaroSimilarityOptions{
++        CaseInsensitive: true,
++    }))
++
++    fmt.Println(stringosim.JaroWinkler([]rune("abaccbabaacbcb"), []rune("bababbcabbaaca")))
++    fmt.Println(stringosim.JaroWinkler([]rune("abaccbabaacbcb"), []rune("BABAbbCABbaACA"),
++    stringosim.JaroSimilarityOptions{
++        CaseInsensitive: true,
++        Threshold:       0.7,
++        PValue:          0.1,
++        LValue:          4,
++    }))
++```
++
++#### Q-gram
++
++Q-gram distance can be calculated using default options (DefaultQGramOptions): length of q-grams is 2 and comparison is case sensitive. Using QGramSimilarityOptions as the parameter of the function we can set custom q-gram length and if the comparison is case sensitive or not.
++
++Example:
++
++```go
++    fmt.Println(stringosim.QGram([]rune("abcde"), []rune("abdcde")))
++
++    fmt.Println(stringosim.QGram([]rune("abcde"), []rune("ABDCDE"),
++    stringosim.QGramSimilarityOptions{
++        CaseInsensitive: true,
++        NGramSizes:     []int{3},
++    }))
++```
++
++#### Cosine
++
++Cosine distance can be calculated using default options (DefaultCosineOptions): length of n-grams is 2 and comparison is case sensitive. Using CosineSimilarityOptions as the parameter of the function we can set custom n-gram length and if the comparison is case sensitive or not.
++
++Example:
++
++```go
++    fmt.Println(stringosim.Cosine([]rune("abcde"), []rune("abdcde")))
++
++    fmt.Println(stringosim.Cosine(Cosine[]rune("abcde"), []rune("ABDCDE"),
++    stringosim.CosineSimilarityOptions{
++        CaseInsensitive: true,
++        NGramSizes:     []int{3},
++    }))
++```
+diff --git a/stringosim/cosine.go b/stringosim/cosine.go
+new file mode 100644
+index 000000000..226450329
+--- /dev/null
++++ b/stringosim/cosine.go
+@@ -0,0 +1,43 @@
++package stringosim
++
++import (
++	"strings"
++)
++
++type CosineSimilarityOptions struct {
++	CaseInsensitive bool
++	NGramSizes      []int
++}
++
++var DefaultCosineSimilarityOptions = CosineSimilarityOptions{
++	CaseInsensitive: false,
++	NGramSizes:      []int{2},
++}
++
++func Cosine(s []rune, t []rune, options ...CosineSimilarityOptions) float64 {
++	if len(s) == 0 {
++		if len(t) == 0 {
++			return float64(0.0)
++		} else {
++			return float64(1.0)
++		}
++	} else {
++		if len(t) == 0 {
++			return float64(1.0)
++		}
++	}
++	opt := DefaultCosineSimilarityOptions
++	for _, option := range options {
++		opt = option
++		break
++	}
++	var sGrams, tGrams map[string]int
++	if opt.CaseInsensitive {
++		sGrams = GetNGram(strings.ToLower(string(s)), opt.NGramSizes)
++		tGrams = GetNGram(strings.ToLower(string(t)), opt.NGramSizes)
++	} else {
++		sGrams = GetNGram(string(s), opt.NGramSizes)
++		tGrams = GetNGram(string(t), opt.NGramSizes)
++	}
++	return 1.0 - float64(DotProductNGrams(sGrams, tGrams))/NormNGram(sGrams)/NormNGram(tGrams)
++}
+diff --git a/stringosim/cosine_test.go b/stringosim/cosine_test.go
+new file mode 100644
+index 000000000..8cb13434e
+--- /dev/null
++++ b/stringosim/cosine_test.go
+@@ -0,0 +1,41 @@
++package stringosim
++
++import (
++	"testing"
++)
++
++var testCosineOptions1 CosineSimilarityOptions = CosineSimilarityOptions{
++	CaseInsensitive: true,
++	NGramSizes:      []int{3},
++}
++
++type CosineTest struct {
++	src string
++	trg string
++	dis float64
++	opt CosineSimilarityOptions
++}
++
++var CosineTests = []CosineTest{
++	{"", "", 0.0, DefaultCosineSimilarityOptions},
++	{"xxxyyy", "xxxyyy", 0.0, DefaultCosineSimilarityOptions},
++	{"xxxyyy", "yyyxxx", 0.1111111111111, DefaultCosineSimilarityOptions},
++	{"xxyzxyyzzy", "xyyxzyzxyzyx", 0.2364582844290667, DefaultCosineSimilarityOptions},
++	{"xxyzxyyzzy", "XYYXZYZXYZYX", 0.5527864045000421, testCosineOptions1},
++	{"xxyyzz", "xxxzzz", 0.40371520600005606, DefaultCosineSimilarityOptions},
++	{"asdlkajsdlkasdkj", "fkdsjlkdf", 0.8825559560970593, DefaultCosineSimilarityOptions},
++	{"STRING", "sting", 1.0, DefaultCosineSimilarityOptions},
++	{"STRING", "sting", 0.7113248654051871, testCosineOptions1},
++	{"comparing the string similarity", "this is compared using Cosine similarity", 0.3519132720916943, DefaultCosineSimilarityOptions},
++	{"comparing the string similarity", "this is compared using Cosine similarity", 0.5291024827582208, testCosineOptions1},
++}
++
++func TestCosine(t *testing.T) {
++	for _, test := range CosineTests {
++		dis := Cosine([]rune(test.src), []rune(test.trg), test.opt)
++		if !EqualFloat64(dis, test.dis) {
++			t.Log("Cosine distance between", test.src, "and", test.trg, "is", dis, "but should be", test.dis)
++			t.Fail()
++		}
++	}
++}
+diff --git a/stringosim/hamming.go b/stringosim/hamming.go
+new file mode 100644
+index 000000000..86fc34627
+--- /dev/null
++++ b/stringosim/hamming.go
+@@ -0,0 +1,33 @@
++package stringosim
++
++import (
++    "errors"
++)
++
++var HAMMING_ERROR_DIFFERENT_LENGTH = errors.New("Can't compare strings of different lengths")
++
++type HammingSimilarityOptions struct {
++    CaseInsensitive bool
++}
++
++var DefaultHammingSimilarityOptions = HammingSimilarityOptions{
++    CaseInsensitive: false,
++}
++
++func Hamming(s []rune, t []rune, options ...HammingSimilarityOptions) (int, error) {
++    if len(s) != len(t) {
++        return -1, HAMMING_ERROR_DIFFERENT_LENGTH
++    }
++    opt := DefaultHammingSimilarityOptions
++    for _, option := range options {
++        opt = option
++        break
++    }
++    ret := 0
++    for i, cs := range s {
++        if !SameRune(cs, t[i], opt.CaseInsensitive) {
++            ret++
++        }
++    }
++    return ret, nil
++}
+diff --git a/stringosim/hamming_test.go b/stringosim/hamming_test.go
+new file mode 100644
+index 000000000..6383f6d90
+--- /dev/null
++++ b/stringosim/hamming_test.go
+@@ -0,0 +1,54 @@
++package stringosim
++
++import (
++    "testing"
++)
++
++var testHammingOptions1 HammingSimilarityOptions = HammingSimilarityOptions{
++    CaseInsensitive: true,
++}
++
++type HammingTest struct {
++    src string
++    trg string
++    dis int
++    opt HammingSimilarityOptions
++    err error
++}
++
++var hammingTests = []HammingTest{
++    {"", "", 0, DefaultHammingSimilarityOptions, nil},
++    {"", "", 0, testHammingOptions1, nil},
++    {"x", "", -1, DefaultHammingSimilarityOptions, HAMMING_ERROR_DIFFERENT_LENGTH},
++    {"x", "", -1, testHammingOptions1, HAMMING_ERROR_DIFFERENT_LENGTH},
++    {"x", "x", 0, DefaultHammingSimilarityOptions, nil},
++    {"x", "x", 0, testHammingOptions1, nil},
++    {"xx", "xy", 1, DefaultHammingSimilarityOptions, nil},
++    {"xx", "xy", 1, testHammingOptions1, nil},
++    {"xxx", "XYX", 3, DefaultHammingSimilarityOptions, nil},
++    {"xxx", "xyx", 1, testHammingOptions1, nil},
++    {"xxyy", "xyz", -1, DefaultHammingSimilarityOptions, HAMMING_ERROR_DIFFERENT_LENGTH},
++    {"xxyy", "xyz", -1, testHammingOptions1, HAMMING_ERROR_DIFFERENT_LENGTH},
++    {"xxyyzz", "xxxzzz", 2, DefaultHammingSimilarityOptions, nil},
++    {"xxyyzz", "xXxzZz", 2, testHammingOptions1, nil},
++    {"asdlkajsdlkasdkj", "fkdsjlkdf", -1, DefaultHammingSimilarityOptions, HAMMING_ERROR_DIFFERENT_LENGTH},
++    {"STRING", "string", 6, DefaultHammingSimilarityOptions, nil},
++    {"STRING", "string", 0, testHammingOptions1, nil},
++}
++
++func TestHamming(t *testing.T) {
++    for _, test := range hammingTests {
++        dis, err := Hamming([]rune(test.src), []rune(test.trg), test.opt)
++        if err != nil || test.err != nil {
++            if !CompareErrors(err, test.err) {
++                t.Log("Error received", err, "instead of", test.err)
++                t.Fail()
++            }
++        } else {
++            if dis != test.dis {
++                t.Log("Hamming distance between", test.src, "and", test.trg, "is", dis, "but should be", test.dis)
++                t.Fail()
++            }
++        }
++    }
++}
+diff --git a/stringosim/helper.go b/stringosim/helper.go
+new file mode 100644
+index 000000000..512df5956
+--- /dev/null
++++ b/stringosim/helper.go
+@@ -0,0 +1,96 @@
++package stringosim
++
++import (
++	"math"
++	"regexp"
++	"unicode"
++)
++
++type SimilarityOptions struct {
++	CaseInsensitive bool
++}
++
++func Min(a int, b int) int {
++	if a < b {
++		return a
++	}
++	return b
++}
++
++func Max(a int, b int) int {
++	if a > b {
++		return a
++	}
++	return b
++}
++
++const EPS = 0.000000001
++
++func EqualFloat64(x, y float64) bool {
++	return math.Abs(x-y) < EPS
++}
++
++func GetNGram(s string, NGramSizes []int) map[string]int {
++	regExp := regexp.MustCompile(`\s+`)
++	t := regExp.ReplaceAllString(s, " ")
++	m := make(map[string]int)
++	for _, nGram := range NGramSizes {
++		for i := 0; i <= len(t)-nGram; i++ {
++			v := string(t[i:(i + nGram)])
++			cnt, ok := m[v]
++			if ok {
++				m[v] = cnt + 1
++			} else {
++				m[v] = 1
++			}
++		}
++	}
++	return m
++}
++
++func CompareErrors(e1 error, e2 error) bool {
++	if e1 == nil {
++		if e2 == nil {
++			return true
++		} else {
++			return false
++		}
++	} else {
++		if e2 == nil {
++			return false
++		} else {
++			return e1.Error() == e2.Error()
++		}
++	}
++}
++
++func SameRune(a rune, b rune, caseInsensitive bool) bool {
++	return a == b || (caseInsensitive && unicode.ToLower(a) == unicode.ToLower(b))
++}
++
++func AbsInt(v int) int {
++	if v > 0 {
++		return v
++	} else {
++		return -v
++	}
++}
++
++func DotProductNGrams(m1, m2 map[string]int) int {
++	ret := 0
++	for k1, v1 := range m1 {
++		v2, ok := m2[k1]
++		if ok {
++			ret += v1 * v2
++		}
++	}
++	return ret
++}
++
++func NormNGram(m map[string]int) float64 {
++	ret := 0.0
++	for _, v := range m {
++		ret += float64(v) * float64(v)
++	}
++	return math.Sqrt(ret)
++}
+diff --git a/stringosim/jaccard.go b/stringosim/jaccard.go
+new file mode 100644
+index 000000000..250fc331d
+--- /dev/null
++++ b/stringosim/jaccard.go
+@@ -0,0 +1,16 @@
++package stringosim
++
++func Jaccard(s []rune, t []rune, NGramSizes []int) float64 {
++	sGrams := GetNGram(string(s), NGramSizes)
++	tGrams := GetNGram(string(t), NGramSizes)
++
++	total := len(sGrams) + len(tGrams)
++	intersection := 0
++	for k, _ := range sGrams {
++		_, ok := tGrams[k]
++		if ok {
++			intersection++
++		}
++	}
++	return 1.0 - float64(intersection)/float64(total-intersection)
++}
+diff --git a/stringosim/jaccard_test.go b/stringosim/jaccard_test.go
+new file mode 100644
+index 000000000..866e96197
+--- /dev/null
++++ b/stringosim/jaccard_test.go
+@@ -0,0 +1,39 @@
++package stringosim
++
++import (
++	"testing"
++)
++
++type JaccardTest struct {
++	src        string
++	trg        string
++	NGramSizes []int
++	dis        float64
++}
++
++var jaccardTests = []JaccardTest{
++	{"abracadabra", "baccarda", []int{1}, 0.0},
++	{"abracadabra", "baccarda", []int{2}, 0.7272727272727273},
++	{"abracadabra", "baccarda", []int{3}, 1.0},
++	{"this    is     space    test", "this is space test", []int{3}, 0.0},
++	{"just another test of jaccard", "i will test jaccard", []int{1}, 0.47058823529411764},
++	{"just another test of jaccard", "i will test jaccard", []int{2}, 0.6129032258064516},
++	{"just another test of jaccard", "i will test jaccard", []int{3}, 0.6875},
++	{"book is on the shelv", "buk is on the shelf", []int{1}, 0.2142857142857143},
++	{"book is on the shelv", "buk is on the shelf", []int{2}, 0.33333333333333337},
++	{"book is on the shelv", "buk is on the shelf", []int{3}, 0.33333333333333337},
++	{"cardiogram", "krdiogram", []int{1}, 0.2222222222222222},
++	{"cardiogram", "krdiogram", []int{2}, 0.30000000000000004},
++	{"cardiogram", "krdiogram", []int{3}, 0.33333333333333337},
++}
++
++func TestJaccard(t *testing.T) {
++	for _, test := range jaccardTests {
++		dis := Jaccard([]rune(test.src), []rune(test.trg), test.NGramSizes)
++		if !EqualFloat64(dis, test.dis) {
++			t.Log("Jaccard distance between", test.src, "and", test.trg, "is", dis, "but should be", test.dis)
++			t.Fail()
++		}
++
++	}
++}
+diff --git a/stringosim/jaro.go b/stringosim/jaro.go
+new file mode 100644
+index 000000000..2b436cac5
+--- /dev/null
++++ b/stringosim/jaro.go
+@@ -0,0 +1,99 @@
++package stringosim
++
++import ()
++
++type JaroSimilarityOptions struct {
++    Threshold       float64
++    PValue          float64
++    LValue          float64
++    CaseInsensitive bool
++}
++
++var DefaultJaroSimilarityOptions = JaroSimilarityOptions{
++    CaseInsensitive: false,
++    Threshold:       0.7,
++    PValue:          0.1,
++    LValue:          4,
++}
++
++func Jaro(s []rune, t []rune, options ...JaroSimilarityOptions) float64 {
++    opt := DefaultJaroSimilarityOptions
++    for _, option := range options {
++        opt = option
++    }
++    lenMatched, numT, _ := jaroHelper(s, t, opt)
++    if lenMatched == 0 {
++        return 0.0
++    }
++    lenS := len(s)
++    lenT := len(t)
++    return jaroFormula(lenMatched, numT, lenS, lenT)
++}
++
++func JaroWinkler(s []rune, t []rune, options ...JaroSimilarityOptions) float64 {
++    opt := DefaultJaroSimilarityOptions
++    for _, option := range options {
++        opt = option
++    }
++    lenMatched, numT, prefixLen := jaroHelper(s, t, opt)
++    if lenMatched == 0 {
++        return 0.0
++    }
++    lenS := len(s)
++    lenT := len(t)
++    jaroDis := jaroFormula(lenMatched, numT, lenS, lenT)
++    if jaroDis < opt.Threshold {
++        return jaroDis
++    }
++    p := opt.PValue
++    if p*float64(prefixLen) > 1.0 {
++        p = 1.0 / float64(prefixLen)
++    }
++    return jaroDis + (1.0-jaroDis)*p*float64(prefixLen)
++}
++
++func jaroHelper(s []rune, t []rune, option JaroSimilarityOptions) (int, int, int) {
++    lenS := len(s)
++    lenT := len(t)
++    checkS := make([]rune, 0, len(s))
++    checkT := make([]rune, 0, len(t))
++    matchedT := make([]bool, len(t))
++    maxDis := Max(lenS, lenT) / 2
++    for is, cs := range s {
++        for it := Max(0, is-maxDis); it <= Min(lenT-1, is+maxDis); it++ {
++            if !matchedT[it] && SameRune(cs, t[it], option.CaseInsensitive) {
++                matchedT[it] = true
++                checkS = append(checkS, cs)
++                break
++            }
++        }
++    }
++    for it, ct := range t {
++        if matchedT[it] {
++            checkT = append(checkT, ct)
++        }
++    }
++    minLen := Min(lenS, lenT)
++    prefixLen := 0
++    for i := 0; i < minLen; i++ {
++        if !SameRune(s[i], t[i], option.CaseInsensitive) {
++            prefixLen = i
++            break
++        }
++    }
++
++    numTranspositions := 0
++    for i, cs := range checkS {
++        if !SameRune(cs, checkT[i], option.CaseInsensitive) {
++            numTranspositions++
++        }
++    }
++    if len(checkS) == 0 {
++        return 0, 0, 0
++    }
++    return len(checkS), numTranspositions / 2, prefixLen
++}
++
++func jaroFormula(m, t, s1, s2 int) float64 {
++    return (float64(m)/float64(s1) + float64(m)/float64(s2) + float64(m-t)/float64(m)) / 3.0
++}
+diff --git a/stringosim/jaro_test.go b/stringosim/jaro_test.go
+new file mode 100644
+index 000000000..0b766ec80
+--- /dev/null
++++ b/stringosim/jaro_test.go
+@@ -0,0 +1,71 @@
++package stringosim
++
++import (
++	"testing"
++)
++
++var testJaroOptions1 JaroSimilarityOptions = JaroSimilarityOptions{
++	CaseInsensitive: true,
++	Threshold:       0.7,
++	PValue:          0.1,
++	LValue:          4,
++}
++
++type JaroTest struct {
++	src string
++	trg string
++	dis float64
++	opt JaroSimilarityOptions
++}
++
++var JaroTests = []JaroTest{
++	{"", "", 0.0, DefaultJaroSimilarityOptions},
++	{"x", "", 0.0, DefaultJaroSimilarityOptions},
++	{"xyzxyztt", "ttxyz", 0.6583333333333333, DefaultJaroSimilarityOptions},
++	{"ttxyzxyz", "XYZtt", 0.5499999999999999, DefaultJaroSimilarityOptions},
++	{"this is very long test case", "another long and also very case test", 0.699074074074074, DefaultJaroSimilarityOptions},
++	{"stiohaotirtNOTsoRANDOMiodjofiosahfos", "ASJODJASOIDJOASnotSIADJsoSAIJDOSrandomSDIOJASOD", 0.39066193853427894, DefaultJaroSimilarityOptions},
++	{"stiohaotirtNOTsoRANDOMiodjofiosahfos", "ASJODJASOIDJOASnotSIADJsoSAIJDOSrandomSDIOJASOD", 0.6602217719238995, testJaroOptions1},
++	{"abracadabra", "baracadaba", 0.9363636363636364, DefaultJaroSimilarityOptions},
++	{"abracadabra", "BARACADABA", 0.0, DefaultJaroSimilarityOptions},
++	{"abracadabra", "BARACADABA", 0.9363636363636364, testJaroOptions1},
++	{"human", "chimpanzee", 0.7333333333333334, DefaultJaroSimilarityOptions},
++	{"nematode knowledge", "empty bottle", 0.5621693121693122, DefaultJaroSimilarityOptions},
++	{"nEmAtOdE KnOwLeDgE", "eMpTy bOtTlE", 0.5621693121693122, testJaroOptions1},
++}
++
++var JaroWinklerTests = []JaroTest{
++	{"", "", 0.0, DefaultJaroSimilarityOptions},
++	{"x", "", 0.0, DefaultJaroSimilarityOptions},
++	{"xyzxyztt", "ttxyz", 0.6583333333333333, DefaultJaroSimilarityOptions},
++	{"ttxyzxyz", "XYZtt", 0.5499999999999999, DefaultJaroSimilarityOptions},
++	{"this is very long test case", "another long and also very case test", 0.699074074074074, DefaultJaroSimilarityOptions},
++	{"stiohaotirtNOTsoRANDOMiodjofiosahfos", "ASJODJASOIDJOASnotSIADJsoSAIJDOSrandomSDIOJASOD", 0.39066193853427894, DefaultJaroSimilarityOptions},
++	{"stiohaotirtNOTsoRANDOMiodjofiosahfos", "ASJODJASOIDJOASnotSIADJsoSAIJDOSrandomSDIOJASOD", 0.6602217719238995, testJaroOptions1},
++	{"abracadabra", "baracadaba", 0.9363636363636364, DefaultJaroSimilarityOptions},
++	{"abracadabra", "BARACADABA", 0.0, DefaultJaroSimilarityOptions},
++	{"abracadabra", "BARACADABA", 0.9363636363636364, testJaroOptions1},
++	{"human", "chimpanzee", 0.7333333333333334, DefaultJaroSimilarityOptions},
++	{"nematode knowledge", "empty bottle", 0.5621693121693122, DefaultJaroSimilarityOptions},
++	{"nEmAtOdE KnOwLeDgE", "eMpTy bOtTlE", 0.5621693121693122, testJaroOptions1},
++}
++
++func TestJaro(t *testing.T) {
++	for _, test := range JaroTests {
++		dis := Jaro([]rune(test.src), []rune(test.trg), test.opt)
++		if !EqualFloat64(dis, test.dis) {
++			t.Log("Jaro distance between", test.src, "and", test.trg, "is", dis, "but should be", test.dis)
++			t.Fail()
++		}
++	}
++}
++
++func TestJaroWinkler(t *testing.T) {
++	for _, test := range JaroWinklerTests {
++		dis := JaroWinkler([]rune(test.src), []rune(test.trg), test.opt)
++		if !EqualFloat64(dis, test.dis) {
++			t.Log("Jaro-Winkler distance between", test.src, "and", test.trg, "is", dis, "but should be", test.dis)
++			t.Fail()
++		}
++	}
++}
+diff --git a/stringosim/lcs.go b/stringosim/lcs.go
+new file mode 100644
+index 000000000..8866100c1
+--- /dev/null
++++ b/stringosim/lcs.go
+@@ -0,0 +1,38 @@
++package stringosim
++
++import ()
++
++type LCSSimilarityOptions struct {
++    CaseInsensitive bool
++}
++
++var DefaultLCSSimilarityOptions = LCSSimilarityOptions{
++    CaseInsensitive: false,
++}
++
++func LCS(s []rune, t []rune, options ...LCSSimilarityOptions) int {
++    opt := DefaultLCSSimilarityOptions
++    for _, option := range options {
++        opt = option
++        break
++    }
++    d := make([][]int, len(s)+1)
++    for i := 0; i <= len(s); i++ {
++        d[i] = make([]int, len(t)+1)
++    }
++    for j := 0; j <= len(t); j++ {
++        d[0][j] = 0
++    }
++    for i := 1; i <= len(s); i++ {
++        d[i][0] = 0
++        for j := 1; j <= len(t); j++ {
++            if SameRune(s[i-1], t[j-1], opt.CaseInsensitive) {
++                d[i][j] = d[i-1][j-1] + 1
++            } else {
++                d[i][j] = Max(d[i-1][j], d[i][j-1])
++            }
++        }
++    }
++
++    return d[len(s)][len(t)]
++}
+diff --git a/stringosim/lcs_test.go b/stringosim/lcs_test.go
+new file mode 100644
+index 000000000..c9086bee8
+--- /dev/null
++++ b/stringosim/lcs_test.go
+@@ -0,0 +1,41 @@
++package stringosim
++
++import (
++    "testing"
++)
++
++var testLCSOptions1 LCSSimilarityOptions = LCSSimilarityOptions{
++    CaseInsensitive: true,
++}
++
++type LCSTest struct {
++    src string
++    trg string
++    dis int
++    opt LCSSimilarityOptions
++}
++
++var LCSTests = []LCSTest{
++    {"", "", 0, DefaultLCSSimilarityOptions},
++    {"x", "", 0, DefaultLCSSimilarityOptions},
++    {"xyzxyztt", "ttxyz", 3, DefaultLCSSimilarityOptions},
++    {"ttxyzxyz", "XYZtt", 3, testLCSOptions1},
++    {"this is very long test case", "another long and also very case test", 16, DefaultLCSSimilarityOptions},
++    {"stiohaotirtNOTsoRANDOMiodjofiosahfos", "ASJODJASOIDJOASnotSIADJsoSAIJDOSrandomSDIOJASOD", 9, DefaultLCSSimilarityOptions},
++    {"stiohaotirtNOTsoRANDOMiodjofiosahfos", "ASJODJASOIDJOASnotSIADJsoSAIJDOSrandomSDIOJASOD", 21, testLCSOptions1},
++    {"abracadabra", "baracadaba", 9, DefaultLCSSimilarityOptions},
++    {"ABRACADABRA", "BARACADABA", 9, testLCSOptions1},
++    {"human", "chimpanzee", 4, DefaultLCSSimilarityOptions},
++    {"nematode knowledge", "empty bottle", 7, DefaultLCSSimilarityOptions},
++    {"nEmAtOdE KnOwLeDgE", "eMpTy bOtTlE", 7, testLCSOptions1},
++}
++
++func TestLCS(t *testing.T) {
++    for _, test := range LCSTests {
++        dis := LCS([]rune(test.src), []rune(test.trg), test.opt)
++        if dis != test.dis {
++            t.Log("LCS distance between", test.src, "and", test.trg, "is", dis, "but should be", test.dis)
++            t.Fail()
++        }
++    }
++}
+diff --git a/stringosim/levenshtein.go b/stringosim/levenshtein.go
+new file mode 100644
+index 000000000..60732f30c
+--- /dev/null
++++ b/stringosim/levenshtein.go
+@@ -0,0 +1,50 @@
++package stringosim
++
++import ()
++
++type LevenshteinSimilarityOptions struct {
++    InsertCost      int
++    DeleteCost      int
++    SubstituteCost  int
++    CaseInsensitive bool
++}
++
++var DefaultLevenshteinSimilarityOptions = LevenshteinSimilarityOptions{
++    InsertCost:     1,
++    DeleteCost:     1,
++    SubstituteCost: 1,
++}
++
++func Levenshtein(s []rune, t []rune, options ...LevenshteinSimilarityOptions) int {
++    changeCost := DefaultLevenshteinSimilarityOptions.SubstituteCost
++    deleteCost := DefaultLevenshteinSimilarityOptions.DeleteCost
++    insertCost := DefaultLevenshteinSimilarityOptions.InsertCost
++    caseInsensitive := DefaultLevenshteinSimilarityOptions.CaseInsensitive
++    if len(options) > 0 {
++        for _, option := range options {
++            changeCost = option.SubstituteCost
++            insertCost = option.InsertCost
++            deleteCost = option.DeleteCost
++            caseInsensitive = option.CaseInsensitive
++            break
++        }
++    }
++    d := make([]int, len(t)+1)
++    for i := 0; i <= len(t); i++ {
++        d[i] = i * insertCost
++    }
++
++    for is, cs := range s {
++        tmpD := d[0]
++        d[0] = (is + 1) * deleteCost
++        for it, ct := range t {
++            curChangeCost := changeCost
++            if SameRune(cs, ct, caseInsensitive) {
++                curChangeCost = 0
++            }
++            nextD := Min(Min(d[it+1]+deleteCost, d[it]+insertCost), tmpD+curChangeCost)
++            tmpD, d[it+1] = d[it+1], nextD
++        }
++    }
++    return d[len(t)]
++}
+diff --git a/stringosim/levenshtein_test.go b/stringosim/levenshtein_test.go
+new file mode 100644
+index 000000000..814ec2f0d
+--- /dev/null
++++ b/stringosim/levenshtein_test.go
+@@ -0,0 +1,79 @@
++package stringosim
++
++import (
++    "testing"
++)
++
++var testLevenshteinOptions1 LevenshteinSimilarityOptions = LevenshteinSimilarityOptions{
++    InsertCost:     2,
++    DeleteCost:     3,
++    SubstituteCost: 5,
++}
++var testLevenshteinOptions2 LevenshteinSimilarityOptions = LevenshteinSimilarityOptions{
++    InsertCost:     5,
++    DeleteCost:     2,
++    SubstituteCost: 3,
++}
++var testLevenshteinOptions3 LevenshteinSimilarityOptions = LevenshteinSimilarityOptions{
++    InsertCost:     3,
++    DeleteCost:     5,
++    SubstituteCost: 2,
++}
++var testLevenshteinOptions4 LevenshteinSimilarityOptions = LevenshteinSimilarityOptions{
++    InsertCost:      DefaultLevenshteinSimilarityOptions.InsertCost,
++    DeleteCost:      DefaultLevenshteinSimilarityOptions.DeleteCost,
++    SubstituteCost:  DefaultLevenshteinSimilarityOptions.SubstituteCost,
++    CaseInsensitive: true,
++}
++
++type LevenshteinTest struct {
++    src string
++    trg string
++    dis int
++    opt LevenshteinSimilarityOptions
++}
++
++var levenshteinTests = []LevenshteinTest{
++    {"", "", 0, DefaultLevenshteinSimilarityOptions},
++    {"", "", 0, testLevenshteinOptions1},
++    {"", "", 0, testLevenshteinOptions2},
++    {"", "", 0, testLevenshteinOptions3},
++    {"x", "", 1, DefaultLevenshteinSimilarityOptions},
++    {"x", "", 3, testLevenshteinOptions1},
++    {"x", "", 2, testLevenshteinOptions2},
++    {"x", "", 5, testLevenshteinOptions3},
++    {"x", "x", 0, DefaultLevenshteinSimilarityOptions},
++    {"x", "x", 0, testLevenshteinOptions1},
++    {"x", "x", 0, testLevenshteinOptions2},
++    {"x", "x", 0, testLevenshteinOptions3},
++    {"xx", "xy", 1, DefaultLevenshteinSimilarityOptions},
++    {"xx", "xy", 5, testLevenshteinOptions1},
++    {"xx", "xy", 3, testLevenshteinOptions2},
++    {"xx", "xy", 2, testLevenshteinOptions3},
++    {"xxx", "xyx", 1, DefaultLevenshteinSimilarityOptions},
++    {"xxx", "xyx", 5, testLevenshteinOptions1},
++    {"xxx", "xyx", 3, testLevenshteinOptions2},
++    {"xxx", "xyx", 2, testLevenshteinOptions3},
++    {"xxyy", "xyz", 2, DefaultLevenshteinSimilarityOptions},
++    {"xxyy", "xyz", 8, testLevenshteinOptions1},
++    {"xxyy", "xyz", 5, testLevenshteinOptions2},
++    {"xxyy", "xyz", 7, testLevenshteinOptions3},
++    {"xxyyzz", "xxxzzz", 2, DefaultLevenshteinSimilarityOptions},
++    {"xxyyzz", "xxxzzz", 10, testLevenshteinOptions1},
++    {"xxyyzz", "xxxzzz", 6, testLevenshteinOptions2},
++    {"xxyyzz", "xxxzzz", 4, testLevenshteinOptions3},
++    {"asdlkajsdlkasdkj", "fkdsjlkdf", 11, DefaultLevenshteinSimilarityOptions},
++    {"STRING", "string", 0, testLevenshteinOptions4},
++    {"STRING", "Astring", 1, testLevenshteinOptions4},
++}
++
++func TestLevenshtein(t *testing.T) {
++    for _, test := range levenshteinTests {
++        dis := Levenshtein([]rune(test.src), []rune(test.trg), test.opt)
++
++        if dis != test.dis {
++            t.Log("Levenshtein distance between", test.src, "and", test.trg, "is", dis, "but should be", test.dis)
++            t.Fail()
++        }
++    }
++}
+diff --git a/stringosim/q-gram.go b/stringosim/q-gram.go
+new file mode 100644
+index 000000000..dd91f30cc
+--- /dev/null
++++ b/stringosim/q-gram.go
+@@ -0,0 +1,47 @@
++package stringosim
++
++import (
++	"strings"
++)
++
++type QGramSimilarityOptions struct {
++	CaseInsensitive bool
++	NGramSizes      []int
++}
++
++var DefaultQGramSimilarityOptions = QGramSimilarityOptions{
++	CaseInsensitive: false,
++	NGramSizes:      []int{2},
++}
++
++func QGram(s []rune, t []rune, options ...QGramSimilarityOptions) int {
++	opt := DefaultQGramSimilarityOptions
++	for _, option := range options {
++		opt = option
++		break
++	}
++	var sGrams, tGrams map[string]int
++	if opt.CaseInsensitive {
++		sGrams = GetNGram(strings.ToLower(string(s)), opt.NGramSizes)
++		tGrams = GetNGram(strings.ToLower(string(t)), opt.NGramSizes)
++	} else {
++		sGrams = GetNGram(string(s), opt.NGramSizes)
++		tGrams = GetNGram(string(t), opt.NGramSizes)
++	}
++	dis := 0
++	for k, vs := range sGrams {
++		vt, ok := tGrams[k]
++		if ok {
++			dis += AbsInt(vs - vt)
++		} else {
++			dis += vs
++		}
++	}
++	for k, vt := range tGrams {
++		_, ok := sGrams[k]
++		if !ok {
++			dis += vt
++		}
++	}
++	return dis
++}
+diff --git a/stringosim/q-gram_test.go b/stringosim/q-gram_test.go
+new file mode 100644
+index 000000000..2a40705f3
+--- /dev/null
++++ b/stringosim/q-gram_test.go
+@@ -0,0 +1,41 @@
++package stringosim
++
++import (
++	"testing"
++)
++
++var testQGramOptions1 QGramSimilarityOptions = QGramSimilarityOptions{
++	CaseInsensitive: true,
++	NGramSizes:      []int{3},
++}
++
++type QGramTest struct {
++	src string
++	trg string
++	dis int
++	opt QGramSimilarityOptions
++}
++
++var qgramTests = []QGramTest{
++	{"", "", 0, DefaultQGramSimilarityOptions},
++	{"xxxyyy", "xxxyyy", 0, DefaultQGramSimilarityOptions},
++	{"xxxyyy", "yyyxxx", 2, DefaultQGramSimilarityOptions},
++	{"xxyzxyyzzy", "xyyxzyzxyzyx", 6, DefaultQGramSimilarityOptions},
++	{"xxyzxyyzzy", "XYYXZYZXYZYX", 10, testQGramOptions1},
++	{"xxyyzz", "xxxzzz", 6, DefaultQGramSimilarityOptions},
++	{"asdlkajsdlkasdkj", "fkdsjlkdf", 21, DefaultQGramSimilarityOptions},
++	{"STRING", "sting", 9, DefaultQGramSimilarityOptions},
++	{"STRING", "sting", 5, testQGramOptions1},
++	{"comparing the string similarity", "this is compared using qgram similarity", 30, DefaultQGramSimilarityOptions},
++	{"comparing the string similarity", "this is compared using qgram similarity", 36, testQGramOptions1},
++}
++
++func TestQGram(t *testing.T) {
++	for _, test := range qgramTests {
++		dis := QGram([]rune(test.src), []rune(test.trg), test.opt)
++		if dis != test.dis {
++			t.Log("Hamming distance between", test.src, "and", test.trg, "is", dis, "but should be", test.dis)
++			t.Fail()
++		}
++	}
++}
+diff --git a/syz-fuzzer/fuzzer.go b/syz-fuzzer/fuzzer.go
+index b6e8be4b4..04516428c 100644
+--- a/syz-fuzzer/fuzzer.go
++++ b/syz-fuzzer/fuzzer.go
+@@ -102,6 +102,8 @@ const (
+ 	OutputFile
+ )
+ 
++var lastEnqueue time.Time
++
+ func main() {
+ 	debug.SetGCPercent(50)
+ 
+@@ -113,12 +115,15 @@ func main() {
+ 		flagProcs   = flag.Int("procs", 1, "number of parallel test processes")
+ 		flagOutput  = flag.String("output", "stdout", "write programs to none/stdout/dmesg/file")
+ 		flagPprof   = flag.String("pprof", "", "address to serve pprof profiles")
+-		flagTest    = flag.Bool("test", false, "enable image testing mode")      // used by syz-ci
+-		flagRunTest = flag.Bool("runtest", false, "enable program testing mode") // used by pkg/runtest
++		flagTest    = flag.Bool("test", false, "enable image testing mode")
++		flagRunTest = flag.Bool("runtest", false, "enable program testing mode")
++		flagPoC     = flag.Bool("poc", false, "mutate base on current PoC")
++		flagMutateTime = flag.Int("mutatetime", 500, "number of mutate times")
++		flagCriticalSys = flag.String("criticalsys", "", "critical syscalls")
++		flagCriticalSysSeq = flag.String("criticalsysseq", "", "critical syscalls sequence")
+ 	)
+ 	flag.Parse()
+ 	outputType := parseOutputType(*flagOutput)
+-	log.Logf(0, "fuzzer started")
+ 
+ 	target, err := prog.GetTarget(*flagOS, *flagArch)
+ 	if err != nil {
+@@ -145,6 +150,7 @@ func main() {
+ 		ipcConfig:   config,
+ 		ipcExecOpts: execOpts,
+ 	}
++
+ 	if *flagTest {
+ 		testImage(*flagManager, checkArgs)
+ 		return
+@@ -247,18 +253,29 @@ func main() {
+ 	for _, id := range r.CheckResult.EnabledCalls[sandbox] {
+ 		calls[target.Syscalls[id]] = true
+ 	}
++	go fuzzer.sendCallsToManager(r.CheckResult.EnabledCalls, sandbox)
+ 	prios := target.CalculatePriorities(fuzzer.corpus)
+ 	fuzzer.choiceTable = target.BuildChoiceTable(prios, calls)
+ 
++	prog.ExecutePoCOnly = *flagPoC
++	prog.CriticalSyscall = *flagCriticalSys
++	prog.CriticalSysSeq = *flagCriticalSysSeq
++
+ 	for pid := 0; pid < *flagProcs; pid++ {
+ 		proc, err := newProc(fuzzer, pid)
+ 		if err != nil {
+ 			log.Fatalf("failed to create proc: %v", err)
+ 		}
+ 		fuzzer.procs = append(fuzzer.procs, proc)
+-		go proc.loop()
++		go proc.loop(*flagMutateTime)
+ 	}
+ 
++	MutatingLoop, err1 := newProc(fuzzer, *flagProcs)
++	if err1 != nil {
++		log.Fatalf("failed to create proc: %v", err)
++	}
++	fuzzer.procs = append(fuzzer.procs, MutatingLoop)
++	go MutatingLoop.checkMutatingQueueLoop()
+ 	fuzzer.pollLoop()
+ }
+ 
+@@ -315,6 +332,7 @@ func (fuzzer *Fuzzer) pollLoop() {
+ 	var lastPoll time.Time
+ 	var lastPrint time.Time
+ 	ticker := time.NewTicker(3 * time.Second).C
++	lastEnqueue = time.Now()
+ 	for {
+ 		poll := false
+ 		select {
+@@ -327,6 +345,11 @@ func (fuzzer *Fuzzer) pollLoop() {
+ 			log.Logf(0, "alive, executed %v", execTotal)
+ 			lastPrint = time.Now()
+ 		}
++		if time.Since(lastEnqueue) > 4*time.Minute && time.Since(lastEnqueue) < 5*time.Minute && prog.ExecutePoCOnly && len(fuzzer.workQueue.triageCandidate)+len(fuzzer.workQueue.candidate)+len(fuzzer.workQueue.triage)+len(fuzzer.workQueue.smash)+len(fuzzer.workQueue.grow) == 0 {
++			//log.Logf(0, "set fuzzer free")
++			//fuzzer.sendSignal("set fuzzer free")
++			//prog.ExecutePoCOnly = false
++		}
+ 		if poll || time.Since(lastPoll) > 10*time.Second {
+ 			needCandidates := fuzzer.workQueue.wantCandidates()
+ 			if poll && !needCandidates {
+@@ -363,6 +386,7 @@ func (fuzzer *Fuzzer) poll(needCandidates bool, stats map[string]uint64) bool {
+ 	maxSignal := r.MaxSignal.Deserialize()
+ 	log.Logf(1, "poll: candidates=%v inputs=%v signal=%v",
+ 		len(r.Candidates), len(r.NewInputs), maxSignal.Len())
++
+ 	fuzzer.addMaxSignal(maxSignal)
+ 	for _, inp := range r.NewInputs {
+ 		fuzzer.addInputFromAnotherFuzzer(inp)
+@@ -541,3 +565,23 @@ func parseOutputType(str string) OutputType {
+ 		return OutputNone
+ 	}
+ }
++
++func (fuzzer *Fuzzer) sendSignal(sg string) {
++	a := &rpctype.FuzzerSignal{
++		Signal: sg,
++	}
++	r := &rpctype.FuzzerSignal{}
++	if err := fuzzer.manager.Call("Manager.EmitSignal", a, r); err != nil {
++		log.Fatalf("emitSignal: failed to connect to manager: %v ", err)
++	}
++}
++
++func (fuzzer *Fuzzer) sendCallsToManager(enabledCalls map[string][]int, sandbox string) {
++	a := &rpctype.GetCallsFromFuzzerArgs{
++		EnabledCalls: enabledCalls,
++		Sandbox:      sandbox,
++	}
++	if err := fuzzer.manager.Call("Manager.GetCallsFromFuzzer", a, nil); err != nil {
++		log.Fatalf("Manager.GetCallsFromFuzzer call failed: %v", err)
++	}
++}
+\ No newline at end of file
+diff --git a/syz-fuzzer/proc.go b/syz-fuzzer/proc.go
+index d815a58b9..a2eee56aa 100644
+--- a/syz-fuzzer/proc.go
++++ b/syz-fuzzer/proc.go
+@@ -13,6 +13,7 @@ import (
+ 	"syscall"
+ 	"time"
+ 
++	"github.com/google/syzkaller/courier"
+ 	"github.com/google/syzkaller/pkg/cover"
+ 	"github.com/google/syzkaller/pkg/hash"
+ 	"github.com/google/syzkaller/pkg/ipc"
+@@ -59,7 +60,7 @@ func newProc(fuzzer *Fuzzer, pid int) (*Proc, error) {
+ 	return proc, nil
+ }
+ 
+-func (proc *Proc) loop() {
++func (proc *Proc) loop(mutatetime int) {
+ 	generatePeriod := 100
+ 	if proc.fuzzer.config.Flags&ipc.FlagSignal == 0 {
+ 		// If we don't have real coverage signal, generate programs more frequently
+@@ -71,17 +72,23 @@ func (proc *Proc) loop() {
+ 		if item != nil {
+ 			switch item := item.(type) {
+ 			case *WorkTriage:
+-				proc.triageInput(item)
++				proc.triageInput(item)  
+ 			case *WorkCandidate:
+ 				proc.execute(proc.execOpts, item.p, item.flags, StatCandidate)
+ 			case *WorkSmash:
+-				proc.smashInput(item)
++				proc.smashInput(item, mutatetime)
++			case *WorkGrow:
++				proc.growInput(proc.execOpts, item, StatCandidate, mutatetime)
+ 			default:
+ 				log.Fatalf("unknown work type: %#v", item)
+ 			}
+ 			continue
+ 		}
+ 
++		if prog.ExecutePoCOnly {
++			continue
++		}
++
+ 		ct := proc.fuzzer.choiceTable
+ 		fuzzerSnapshot := proc.fuzzer.snapshot()
+ 		if len(fuzzerSnapshot.corpus) == 0 || i%generatePeriod == 0 {
+@@ -177,6 +184,17 @@ func (proc *Proc) triageInput(item *WorkTriage) {
+ 	}
+ }
+ 
++func (proc *Proc) growInput(execOpts *ipc.ExecOpts, item *WorkGrow, stat Stat, mutatetime int) {
++	log.Logf(1, "#%v: growInput type=%x", proc.pid, item.flags)
++	proc.executeRaw(execOpts, item.p, stat)
++	fuzzerSnapshot := proc.fuzzer.snapshot()
++	for i := 0; i < mutatetime; i++ {
++		p := item.p.Clone()
++		p.Mutate(proc.rnd, prog.RecommendedCalls, proc.fuzzer.choiceTable, fuzzerSnapshot.corpus)
++		proc.execute(proc.execOpts, p, ProgNormal, StatSmash)
++	}
++}
++
+ func reexecutionSuccess(info *ipc.ProgInfo, oldInfo *ipc.CallInfo, call int) bool {
+ 	if info == nil || len(info.Calls) == 0 {
+ 		return false
+@@ -200,7 +218,7 @@ func getSignalAndCover(p *prog.Prog, info *ipc.ProgInfo, call int) (signal.Signa
+ 	return signal.FromRaw(inf.Signal, signalPrio(p, inf, call)), inf.Cover
+ }
+ 
+-func (proc *Proc) smashInput(item *WorkSmash) {
++func (proc *Proc) smashInput(item *WorkSmash, mutatetime int) {
+ 	if proc.fuzzer.faultInjectionEnabled && item.call != -1 {
+ 		proc.failCall(item.p, item.call)
+ 	}
+@@ -208,7 +226,7 @@ func (proc *Proc) smashInput(item *WorkSmash) {
+ 		proc.executeHintSeed(item.p, item.call)
+ 	}
+ 	fuzzerSnapshot := proc.fuzzer.snapshot()
+-	for i := 0; i < 100; i++ {
++	for i := 0; i < mutatetime; i++ {
+ 		p := item.p.Clone()
+ 		p.Mutate(proc.rnd, prog.RecommendedCalls, proc.fuzzer.choiceTable, fuzzerSnapshot.corpus)
+ 		log.Logf(1, "#%v: smash mutated", proc.pid)
+@@ -250,7 +268,10 @@ func (proc *Proc) executeHintSeed(p *prog.Prog, call int) {
+ func (proc *Proc) execute(execOpts *ipc.ExecOpts, p *prog.Prog, flags ProgTypes, stat Stat) *ipc.ProgInfo {
+ 	info := proc.executeRaw(execOpts, p, stat)
+ 	calls, extra := proc.fuzzer.checkNewSignal(p, info)
+-	for _, callIndex := range calls {
++	for i, callIndex := range calls {
++		if i < prog.NOfCalls {
++			continue
++		}
+ 		proc.enqueueCallTriage(p, flags, callIndex, info.Calls[callIndex])
+ 	}
+ 	if extra {
+@@ -343,3 +364,40 @@ func (proc *Proc) logProgram(opts *ipc.ExecOpts, p *prog.Prog) {
+ 		log.Fatalf("unknown output type: %v", proc.fuzzer.outputType)
+ 	}
+ }
++
++func (proc *Proc) checkMutatingQueueLoop() {
++	for {
++		a := &rpctype.GetQueueLenArgs{
++			Flag: courier.Mutating,
++		}
++		r := &rpctype.GetQueueLenRes{}
++		// courier.MutateArgsQueue
++		// courier.CommandsQueue
++		// courier.S2EArgsQueue
++		if err := proc.fuzzer.manager.Call("Manager.GetQueueLen", a, r); err != nil {
++			log.Fatalf("checkArgsQueueLoop: failed to connect to manager: %v ", err)
++		}
++		if r.Length > 0 {
++			pq := &rpctype.ProgQueue{}
++			if err := proc.fuzzer.manager.Call("Manager.RetrieveArgsQueue", pq, pq); err != nil {
++				log.Fatalf("failed to connect to manager: %v ", err)
++			}
++			log.Logf(1, "New Arg Aviable: %s\n", pq.Prog)
++			p, err := proc.fuzzer.target.Deserialize(pq.Prog, prog.NonStrict)
++			if err != nil {
++				log.Fatalf("checkArgsQueueLoop: failed to parse program from manager: %v", err)
++			}
++			//sig := hash.Hash(pq.Prog)
++			//sign := pq.Prog.Signal.Deserialize()
++			//fuzzer.addInputToCorpus(p, sign, sig)
++			flags := ProgNormal
++			prog.NOfCalls = pq.NOfCalls
++			prog.PocProg = string(pq.PocProg)
++			proc.fuzzer.workQueue.enqueue(&WorkGrow{
++				p:     p,
++				flags: flags,
++			})
++		}
++		time.Sleep(10 * time.Second)
++	}
++}
+diff --git a/syz-fuzzer/testing.go b/syz-fuzzer/testing.go
+index 960a1fd23..e0b89ca80 100644
+--- a/syz-fuzzer/testing.go
++++ b/syz-fuzzer/testing.go
+@@ -183,7 +183,8 @@ func checkMachine(args *checkArgs) (*rpctype.CheckArgs, error) {
+ }
+ 
+ func checkRevisions(args *checkArgs) error {
+-	log.Logf(0, "checking revisions...")
++	//log.Logf(0, "checking revisions!...")
++	log.Logf(0, "checkRevisions prog.GitRevision %v", prog.GitRevision)
+ 	executorArgs := strings.Split(args.ipcConfig.Executor, " ")
+ 	executorArgs = append(executorArgs, "version")
+ 	cmd := osutil.Command(executorArgs[0], executorArgs[1:]...)
+diff --git a/syz-fuzzer/workqueue.go b/syz-fuzzer/workqueue.go
+index 62648336c..e31b664a2 100644
+--- a/syz-fuzzer/workqueue.go
++++ b/syz-fuzzer/workqueue.go
+@@ -5,6 +5,7 @@ package main
+ 
+ import (
+ 	"sync"
++	"time"
+ 
+ 	"github.com/google/syzkaller/pkg/ipc"
+ 	"github.com/google/syzkaller/prog"
+@@ -20,6 +21,7 @@ type WorkQueue struct {
+ 	candidate       []*WorkCandidate
+ 	triage          []*WorkTriage
+ 	smash           []*WorkSmash
++	grow            []*WorkGrow
+ 
+ 	procs          int
+ 	needCandidates chan struct{}
+@@ -61,6 +63,11 @@ type WorkSmash struct {
+ 	call int
+ }
+ 
++type WorkGrow struct {
++	p     *prog.Prog
++	flags ProgTypes
++}
++
+ func newWorkQueue(procs int, needCandidates chan struct{}) *WorkQueue {
+ 	return &WorkQueue{
+ 		procs:          procs,
+@@ -71,6 +78,7 @@ func newWorkQueue(procs int, needCandidates chan struct{}) *WorkQueue {
+ func (wq *WorkQueue) enqueue(item interface{}) {
+ 	wq.mu.Lock()
+ 	defer wq.mu.Unlock()
++	lastEnqueue = time.Now()
+ 	switch item := item.(type) {
+ 	case *WorkTriage:
+ 		if item.flags&ProgCandidate != 0 {
+@@ -82,6 +90,8 @@ func (wq *WorkQueue) enqueue(item interface{}) {
+ 		wq.candidate = append(wq.candidate, item)
+ 	case *WorkSmash:
+ 		wq.smash = append(wq.smash, item)
++	case *WorkGrow:
++		wq.grow = append(wq.grow, item)
+ 	default:
+ 		panic("unknown work type")
+ 	}
+@@ -89,7 +99,7 @@ func (wq *WorkQueue) enqueue(item interface{}) {
+ 
+ func (wq *WorkQueue) dequeue() (item interface{}) {
+ 	wq.mu.RLock()
+-	if len(wq.triageCandidate)+len(wq.candidate)+len(wq.triage)+len(wq.smash) == 0 {
++	if len(wq.triageCandidate)+len(wq.candidate)+len(wq.triage)+len(wq.smash)+len(wq.grow) == 0 {
+ 		wq.mu.RUnlock()
+ 		return nil
+ 	}
+@@ -113,6 +123,10 @@ func (wq *WorkQueue) dequeue() (item interface{}) {
+ 		last := len(wq.smash) - 1
+ 		item = wq.smash[last]
+ 		wq.smash = wq.smash[:last]
++	} else if len(wq.grow) != 0 {
++		last := len(wq.grow) - 1
++		item = wq.grow[last]
++		wq.grow = wq.grow[:last]
+ 	}
+ 	wq.mu.Unlock()
+ 	if wantCandidates {
+diff --git a/syz-manager/manager.go b/syz-manager/manager.go
+index 2a0b7dd48..696327089 100644
+--- a/syz-manager/manager.go
++++ b/syz-manager/manager.go
+@@ -6,6 +6,7 @@ package main
+ import (
+ 	"bytes"
+ 	"encoding/json"
++	"errors"
+ 	"flag"
+ 	"fmt"
+ 	"math/rand"
+@@ -13,10 +14,14 @@ import (
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
++	"strconv"
++	"strings"
+ 	"sync"
+ 	"sync/atomic"
+ 	"time"
++	"regexp"
+ 
++	"github.com/google/syzkaller/courier"
+ 	"github.com/google/syzkaller/dashboard/dashapi"
+ 	"github.com/google/syzkaller/pkg/cover"
+ 	"github.com/google/syzkaller/pkg/csource"
+@@ -35,14 +40,22 @@ import (
+ 	"github.com/google/syzkaller/prog"
+ 	"github.com/google/syzkaller/sys/targets"
+ 	"github.com/google/syzkaller/vm"
++	"github.com/google/syzkaller/stringosim"
+ )
+ 
+ var (
++	// --config
+ 	flagConfig = flag.String("config", "", "configuration file")
++	// -debug
+ 	flagDebug  = flag.Bool("debug", false, "dump all VM output to console")
++	// --bench
+ 	flagBench  = flag.String("bench", "", "write execution statistics into this file periodically")
++	// -poc
++	flagPoC    = flag.Bool("poc", false, "mutate base on current PoC")
+ )
+ 
++var shutdownErr = errors.New("An error to shutdown all vms")
++
+ type Manager struct {
+ 	cfg            *mgrconfig.Config
+ 	vmPool         *vm.Pool
+@@ -102,6 +115,13 @@ const (
+ 	phaseTriagedHub
+ )
+ 
++const (
++	nonCritical = 0
++	abMemRead   = 1
++	abMemWrite  = 2
++	invalidFree = 4
++)
++
+ const currentDBVersion = 4
+ 
+ type Crash struct {
+@@ -116,18 +136,24 @@ func main() {
+ 	}
+ 	flag.Parse()
+ 	log.EnableLogCaching(1000, 1<<20)
++	// Read the.cfg file
+ 	cfg, err := mgrconfig.LoadFile(*flagConfig)
+ 	if err != nil {
+ 		log.Fatalf("%v", err)
+ 	}
++	// cfg.TargetOS Target operating system e.g. linux
++	// cfg.TargetArch Target architecture e.g. amd64
++	// Analyze the target operating system and architecture
+ 	target, err := prog.GetTarget(cfg.TargetOS, cfg.TargetArch)
+ 	if err != nil {
+ 		log.Fatalf("%v", err)
+ 	}
++	// Find out if the local operating system and architecture meets the target requirements
+ 	sysTarget := targets.Get(cfg.TargetOS, cfg.TargetArch)
+ 	if sysTarget == nil {
+ 		log.Fatalf("unsupported OS/arch: %v/%v", cfg.TargetOS, cfg.TargetArch)
+ 	}
++	// Extract allowed and forbidden system calls
+ 	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls)
+ 	if err != nil {
+ 		log.Fatalf("%v", err)
+@@ -140,6 +166,7 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, sysTarget *targets.T
+ 	// Type "none" is a special case for debugging/development when manager
+ 	// does not start any VMs, but instead you start them manually
+ 	// and start syz-fuzzer there.
++	// cfg.Type indicates the type of virtual machine, e.g. qemu
+ 	if cfg.Type != "none" {
+ 		var err error
+ 		vmPool, err = vm.Create(cfg, *flagDebug)
+@@ -149,6 +176,12 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, sysTarget *targets.T
+ 	}
+ 
+ 	crashdir := filepath.Join(cfg.Workdir, "crashes")
++	// Determine if the crashes directory exists
++	_,err := os.Stat(crashdir)
++	if err == nil {
++		os.RemoveAll(crashdir)
++	}
++	// Create a multilevel directory, do not operate if it exists
+ 	osutil.MkdirAll(crashdir)
+ 
+ 	reporter, err := report.NewReporter(cfg)
+@@ -181,6 +214,7 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, sysTarget *targets.T
+ 	}
+ 
+ 	log.Logf(0, "loading corpus...")
++	// Create the file corpus.db to hold the test corpus.
+ 	mgr.corpusDB, err = db.Open(filepath.Join(cfg.Workdir, "corpus.db"))
+ 	if err != nil {
+ 		log.Fatalf("failed to open corpus database: %v", err)
+@@ -196,14 +230,20 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, sysTarget *targets.T
+ 		log.Fatalf("failed to create rpc server: %v", err)
+ 	}
+ 
++	// Create a fuzzy process indicator board
+ 	if cfg.DashboardAddr != "" {
+ 		mgr.dash = dashapi.New(cfg.DashboardClient, cfg.DashboardAddr, cfg.DashboardKey)
+ 	}
+ 
++	// Indicates the creation of a new Goroutine (lightweight thread) for asynchronous execution of the function.
++	// outputs the results of the fuzz test every 10 seconds
+ 	go func() {
++		c := 0
+ 		for lastTime := time.Now(); ; {
++			c += 1
+ 			time.Sleep(10 * time.Second)
+ 			now := time.Now()
++			// time.Now().Sub(pretime) calculates the difference between the current time and pretime. Returns the Duration type
+ 			diff := now.Sub(lastTime)
+ 			lastTime = now
+ 			mgr.mu.Lock()
+@@ -211,19 +251,30 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, sysTarget *targets.T
+ 				mgr.mu.Unlock()
+ 				continue
+ 			}
++
++			// Duration is the time elapsed between two moments.
++			// The return value of time.Duration() is in ns (nanoseconds).
++			// For example, time.Duration(30) * time.Second: 30s
++			// atomic.loadint32 () ** is the atomic load of a variable of type int32 from main memory to working memory to prevent concurrent dirty reads
++			// atomic.storeint32 ()** is the atomic synchronization of variables of type int32 from working memory to main memory, preventing other threads from reading incorrect data
++			// Because multithreading is involved here
++			// The reproduce test time is cumulative and does not include the reproduce time
+ 			mgr.fuzzingTime += diff * time.Duration(atomic.LoadUint32(&mgr.numFuzzing))
++			usetime := uint64(mgr.fuzzingTime) / 1e9
+ 			executed := mgr.stats.execTotal.get()
+ 			crashes := mgr.stats.crashes.get()
+ 			signal := mgr.stats.corpusSignal.get()
+ 			mgr.mu.Unlock()
+ 			numReproducing := atomic.LoadUint32(&mgr.numReproducing)
++			// Number of cases in which fuzzy testing is being performed
+ 			numFuzzing := atomic.LoadUint32(&mgr.numFuzzing)
+ 
+-			log.Logf(0, "VMs %v, executed %v, cover %v, crashes %v, repro %v",
+-				numFuzzing, executed, signal, crashes, numReproducing)
++			log.Logf(0, "Fuzzing %v, Executed %v, Cover %v, Crashes %v, Reproducing %v, Usetime %vs",
++				numFuzzing, executed, signal, crashes, numReproducing, usetime)
+ 		}
+ 	}()
+ 
++	// The bench parameter periodically writes execution statistics to the file we specified.
+ 	if *flagBench != "" {
+ 		f, err := os.OpenFile(*flagBench, os.O_WRONLY|os.O_CREATE|os.O_EXCL, osutil.DefaultFilePerm)
+ 		if err != nil {
+@@ -240,10 +291,12 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, sysTarget *targets.T
+ 				}
+ 				mgr.minimizeCorpus()
+ 				vals["corpus"] = uint64(len(mgr.corpus))
++				// Since time is measured in nanoseconds, this is converted to seconds.
+ 				vals["uptime"] = uint64(time.Since(mgr.firstConnect)) / 1e9
+ 				vals["fuzzing"] = uint64(mgr.fuzzingTime) / 1e9
+ 				mgr.mu.Unlock()
+ 
++
+ 				data, err := json.MarshalIndent(vals, "", "  ")
+ 				if err != nil {
+ 					log.Fatalf("failed to serialize bench data")
+@@ -259,6 +312,7 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, sysTarget *targets.T
+ 		go mgr.dashboardReporter()
+ 	}
+ 
++	// Check if the virtual machine is started or needs to be run manually
+ 	osutil.HandleInterrupts(vm.Shutdown)
+ 	if mgr.vmPool == nil {
+ 		log.Logf(0, "no VMs started (type=none)")
+@@ -267,15 +321,63 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, sysTarget *targets.T
+ 		<-vm.Shutdown
+ 		return
+ 	}
++	TestcasePath = cfg.Testcase
++	courier.AnalyzerPath = cfg.AnalyzerDir
++	GrebeStructPath = cfg.GrebeStruct
++	MutateTime = cfg.MutateTime
++	CallTracePath = cfg.CallTracePath
++	CriticalSys = cfg.CriticalSys
++	CriticalSysSeq = cfg.CriticalSysSeq
++	CalltraceSim = cfg.CalltraceSim
++	ReproSim = cfg.ReproSim
++
++
++	log.Logf(0, "\nTestcasePath: %v\nAnalyzerPath: %v\nGrebeStructPath: %v\nCallTracePath: %v\nMutateTime: %v\nCalltraceSim: %v\nReproSim: %v\nFuzzingTime: %v\nflagPoC: %v", 
++				TestcasePath,
++				courier.AnalyzerPath,
++				GrebeStructPath,
++				CallTracePath,
++				MutateTime,
++				CalltraceSim,
++				ReproSim,
++				cfg.TimeLimit,
++				*flagPoC)
++
++	ShowCriticalSys(CriticalSys)
++	ShowCriticalSysSeq(CriticalSysSeq)
++
++	GrebeStructContent, err := os.ReadFile(GrebeStructPath)
++    if err != nil {
++		log.Logf(0, "[error] Get GrebeStructContent: %v", err)
++    } else {
++		GrebeStructObj = strings.Split(string(GrebeStructContent), "\n")
++	}
++
++	CallTraceContent, err := os.ReadFile(CallTracePath)
++	if err != nil {
++		log.Logf(0, "[error] Get CallTraceContent: %v", err)
++    } else {
++		var function string
++		RawCall_splice := strings.Split(string(CallTraceContent), "\n")
++		for _, call := range RawCall_splice {
++			function = strings.Split(strings.TrimSpace(call), " ")[0]
++			if len(function) > 0 {
++				RawCallTrace = fmt.Sprintf("%s%s\n", RawCallTrace, function)
++			}
++		}
++		log.Logf(0, "[info] Get CallTraceFunction:\n%v", RawCallTrace)
++	}
+ 	mgr.vmLoop()
+ }
+ 
++// Fuzzy test crash result structure
+ type RunResult struct {
+ 	idx   int
+ 	crash *Crash
+ 	err   error
+ }
+ 
++// Reproduce the crash result structure
+ type ReproResult struct {
+ 	instances []int
+ 	report0   *report.Report // the original report we started reproducing
+@@ -287,6 +389,10 @@ type ReproResult struct {
+ 
+ // Manager needs to be refactored (#605).
+ // nolint: gocyclo
++// Actual fuzz test loop body
++// Split the VM instance into two parts, one for crash recovery and the other for fuzzing
++// If there are reproducible and remaining instances, reproduce the crash;
++// If there are no reproducible but remaining instances, then fuzz.
+ func (mgr *Manager) vmLoop() {
+ 	log.Logf(0, "booting test machines...")
+ 	log.Logf(0, "wait for the connection from test machine...")
+@@ -296,6 +402,7 @@ func (mgr *Manager) vmLoop() {
+ 		instancesPerRepro = vmCount
+ 	}
+ 	bootInstance := make(chan int)
++	// bootInstance indicates the boot VM instance, numbered from 0 to count
+ 	go func() {
+ 		for i := 0; i < vmCount; i++ {
+ 			bootInstance <- i
+@@ -311,11 +418,20 @@ func (mgr *Manager) vmLoop() {
+ 	reproDone := make(chan *ReproResult, 1)
+ 	stopPending := false
+ 	shutdown := vm.Shutdown
++	// Record the number of critical crashes successfully reproduced.
++	// Fuzzy tests may be stopped if more than 5 critical crashes are successfully reproduced for the same crash.
++	succeed := 0
++	// Total fuzzy test cycle start time
++	start := time.Now()
++	storeRead := mgr.cfg.StoreRead
++	log.Logf(0, "storeRead: %v", storeRead)
++	
++	// Determine whether to focus on read-related crashes
++	report.ReadIsCritical = storeRead
+ 	for shutdown != nil || len(instances) != vmCount {
+ 		mgr.mu.Lock()
+ 		phase := mgr.phase
+ 		mgr.mu.Unlock()
+-
+ 		for crash := range pendingRepro {
+ 			if reproducing[crash.Title] {
+ 				continue
+@@ -324,12 +440,12 @@ func (mgr *Manager) vmLoop() {
+ 			if !mgr.needRepro(crash) {
+ 				continue
+ 			}
+-			log.Logf(1, "loop: add to repro queue '%v'", crash.Title)
++			log.Logf(0, "loop: add to repro queue '%v'", crash.Title)
+ 			reproducing[crash.Title] = true
+ 			reproQueue = append(reproQueue, crash)
+ 		}
+ 
+-		log.Logf(1, "loop: phase=%v shutdown=%v instances=%v/%v %+v repro: pending=%v reproducing=%v queued=%v",
++		log.Logf(0, "loop: phase=%v shutdown=%v instances=%v/%v %+v repro: pending=%v reproducing=%v queued=%v",
+ 			phase, shutdown == nil, len(instances), vmCount, instances,
+ 			len(pendingRepro), len(reproducing), len(reproQueue))
+ 
+@@ -339,6 +455,10 @@ func (mgr *Manager) vmLoop() {
+ 		}
+ 
+ 		if shutdown != nil {
++			executed := mgr.stats.execTotal.get()
++			if executed <= 1 && time.Since(start).Seconds() > 600 && len(reproducing) == 0 {
++				log.Logf(0, "Long time no executed!")
++			}
+ 			for canRepro() && len(instances) >= instancesPerRepro {
+ 				last := len(reproQueue) - 1
+ 				crash := reproQueue[last]
+@@ -348,8 +468,11 @@ func (mgr *Manager) vmLoop() {
+ 				instances = instances[:len(instances)-instancesPerRepro]
+ 				reproInstances += instancesPerRepro
+ 				atomic.AddUint32(&mgr.numReproducing, 1)
+-				log.Logf(1, "loop: starting repro of '%v' on instances %+v", crash.Title, vmIndexes)
++				log.Logf(0, "loop: starting repro of '%v' on instances %+v", crash.Title, vmIndexes)
++				// runRepro() -> repro.Run() -> ctx.repro()
++				// pkg/repro/repro.go: func Run(crashLog []byte
+ 				go func() {
++					repro.TargetNewCrash = string(crash.Title)
+ 					res, stats, err := repro.Run(crash.Output, mgr.cfg, mgr.reporter, mgr.vmPool, vmIndexes)
+ 					reproDone <- &ReproResult{
+ 						instances: vmIndexes,
+@@ -361,13 +484,24 @@ func (mgr *Manager) vmLoop() {
+ 					}
+ 				}()
+ 			}
++
+ 			for !canRepro() && len(instances) != 0 {
+ 				last := len(instances) - 1
+ 				idx := instances[last]
+ 				instances = instances[:last]
+-				log.Logf(1, "loop: starting instance %v", idx)
++				log.Logf(0, "loop: starting instance %v", idx)
+ 				go func() {
+-					crash, err := mgr.runInstance(idx)
++					timeLimit, err := strconv.Atoi(mgr.cfg.TimeLimit)
++					if err != nil {
++						timeLimit = 8
++					}
++					// runInstance() -> runInstanceInner() -> FuzzerCmd() & MonitorExecution()
++					crash, err := mgr.runInstance(idx, start, timeLimit)
++					if (err == shutdownErr || succeed > 5) && crash == nil && len(reproQueue)+len(pendingRepro)+len(reproducing) == 0 {
++						// Stop the fuzzy test cycle
++						shutdown = nil
++					}
++					// After a crash is triggered, it is stored in the runDone channel.
+ 					runDone <- &RunResult{idx, crash, err}
+ 				}()
+ 			}
+@@ -383,25 +517,52 @@ func (mgr *Manager) vmLoop() {
+ 		case idx := <-bootInstance:
+ 			instances = append(instances, idx)
+ 		case stopRequest <- true:
+-			log.Logf(1, "loop: issued stop request")
++			log.Logf(0, "loop: issued stop request")
+ 			stopPending = true
+ 		case res := <-runDone:
+-			log.Logf(1, "loop: instance %v finished, crash=%v", res.idx, res.crash != nil)
++			log.Logf(0, "loop: instance %v finished, crash=%v", res.idx, res.crash != nil)
++			if *flagPoC && res.crash != nil && res.crash.Report.Title == vm.NoOutputCrash {
++				log.Logf(0, "exit due to no output for a long time")
++				shutdown = nil
++			}
+ 			if res.err != nil && shutdown != nil {
+ 				log.Logf(0, "%v", res.err)
++				os.Exit(2)
+ 			}
+ 			stopPending = false
+ 			instances = append(instances, res.idx)
+ 			// On shutdown qemu crashes with "qemu: terminating on signal 2",
+ 			// which we detect as "lost connection". Don't save that as crash.
+ 			if shutdown != nil && res.crash != nil {
+-				needRepro := mgr.saveCrash(res.crash)
+-				if needRepro {
+-					log.Logf(1, "loop: add pending repro for '%v'", res.crash.Title)
+-					pendingRepro[res.crash] = true
++				needRepro := mgr.saveCrash(res.crash, start)
++				log.Logf(0, "SaveCrash:%s needRepro:%v Until:%vs", res.crash.Title, needRepro, time.Since(start).Seconds())
++				if isCriticalCrash(res.crash.Report.Title, true) > 0 {
++					if needRepro && res.crash.Report.Title != vm.NoOutputCrash && res.crash.Report.Title != "lost connection to test machine" {
++						log.Logf(0, "loop: add pending repro for '%v'", res.crash.Title)
++						pendingRepro[res.crash] = true
++					}
+ 				}
+ 			}
+ 		case res := <-reproDone:
++			if res.res != nil {
++				log.Logf(0, "[+] calculate repro similarity between TestcaseProg and Newcrash: %v", res.res.Report.Title)
++				prog := res.res.Prog.Serialize()
++				log.Logf(0, "[Repro-Sim] Jaccard_Dis:%v Jaro_Sim:%v JaroWinkler_Sim:%v QGram_Dis:%v Cosine_Dis:%v Levenshtein_Dis:%v LCS_Sim:%v", 
++						stringosim.Jaccard([]rune(string(TestcaseProg)),[]rune(string(prog)),[]int{10}),
++						stringosim.Jaro([]rune(string(TestcaseProg)),[]rune(string(prog))),
++						stringosim.JaroWinkler([]rune(string(TestcaseProg)),[]rune(string(prog))),
++						stringosim.QGram([]rune(string(TestcaseProg)),[]rune(string(prog))),
++						stringosim.Cosine([]rune(string(TestcaseProg)),[]rune(string(prog))),
++						stringosim.Levenshtein([]rune(string(TestcaseProg)), []rune(string(prog))),
++						stringosim.LCS([]rune(string(TestcaseProg)), []rune(string(prog))))
++				if (stringosim.Jaro([]rune(string(TestcaseProg)),[]rune(string(prog))) > ReproSim && isCriticalCrash(res.res.Report.Title, storeRead) != nonCritical) {
++
++					prog := res.res.Prog.Serialize()
++					courier.AppendCriticalPoCQueue(prog)
++					flagExtraMutating = true
++					log.Logf(0, "ReproDone and AppendCriticalPoCQueue for crash: %v", res.res.Report.Title)
++				}
++			}
+ 			atomic.AddUint32(&mgr.numReproducing, ^uint32(0))
+ 			crepro := false
+ 			title := ""
+@@ -409,7 +570,7 @@ func (mgr *Manager) vmLoop() {
+ 				crepro = res.res.CRepro
+ 				title = res.res.Report.Title
+ 			}
+-			log.Logf(1, "loop: repro on %+v finished '%v', repro=%v crepro=%v desc='%v'",
++			log.Logf(0, "loop: repro on %+v finished '%v', repro=%v crepro=%v desc='%v'",
+ 				res.instances, res.report0.Title, res.res != nil, crepro, title)
+ 			if res.err != nil {
+ 				log.Logf(0, "repro failed: %v", res.err)
+@@ -420,15 +581,42 @@ func (mgr *Manager) vmLoop() {
+ 			if res.res == nil {
+ 				if !res.hub {
+ 					mgr.saveFailedRepro(res.report0, res.stats)
++					log.Logf(0, "SaveFailedRepro %s Until:%vs", res.report0.Title, time.Since(start).Seconds())
+ 				}
+ 			} else {
+ 				mgr.saveRepro(res.res, res.stats, res.hub)
++				if repro.AlreadyReproCrash == nil {
++					repro.AlreadyReproCrash = make(map[string]bool)
++				}
++				repro.AlreadyReproCrash[string(res.res.Report.Title)] = true
++				log.Logf(0, "SaveRepro %s Until:%vs", res.res.Report.Title, time.Since(start).Seconds())
++				if isCriticalCrash(res.res.Report.Title, storeRead) != nonCritical {
++					succeed++
++				}
++				if (isCriticalCrash(res.res.Report.Title, storeRead) & abMemWrite) != nonCritical {
++					if succeed == 1 {
++						log.Logf(0, "Abnormally memory write found")
++						courier.SaveToFile("AbnormallyMemWrite")
++					}
++				}
++				if (isCriticalCrash(res.res.Report.Title, storeRead) & abMemRead) != nonCritical {
++					if succeed == 1 {
++						log.Logf(0, "Abnormally memory read found")
++						courier.SaveToFile("AbnormallyMemRead")
++					}
++				}
++				if (isCriticalCrash(res.res.Report.Title, storeRead) & invalidFree) != nonCritical {
++					if succeed == 1 {
++						log.Logf(0, "double free or invalid free")
++						courier.SaveToFile("DoubleFree")
++					}
++				}
+ 			}
+ 		case <-shutdown:
+-			log.Logf(1, "loop: shutting down...")
++			log.Logf(0, "loop: shutting down...")
+ 			shutdown = nil
+ 		case crash := <-mgr.hubReproQueue:
+-			log.Logf(1, "loop: get repro from hub")
++			log.Logf(0, "loop: get repro from hub")
+ 			pendingRepro[crash] = true
+ 		case reply := <-mgr.needMoreRepros:
+ 			reply <- phase >= phaseTriagedHub &&
+@@ -528,7 +716,7 @@ func (mgr *Manager) loadCorpus() {
+ 	mgr.phase = phaseLoadedCorpus
+ }
+ 
+-func (mgr *Manager) runInstance(index int) (*Crash, error) {
++func (mgr *Manager) runInstance(index int, managerStart time.Time, timeLimit int) (*Crash, error) {
+ 	mgr.checkUsedFiles()
+ 	inst, err := mgr.vmPool.Create(index)
+ 	if err != nil {
+@@ -562,21 +750,25 @@ func (mgr *Manager) runInstance(index int) (*Crash, error) {
+ 		fuzzerV = 100
+ 		procs = 1
+ 	}
+-
+-	// Run the fuzzer binary.
+ 	start := time.Now()
+ 	atomic.AddUint32(&mgr.numFuzzing, 1)
+ 	defer atomic.AddUint32(&mgr.numFuzzing, ^uint32(0))
+ 	cmd := instance.FuzzerCmd(fuzzerBin, executorCmd, fmt.Sprintf("vm-%v", index),
+ 		mgr.cfg.TargetOS, mgr.cfg.TargetArch, fwdAddr, mgr.cfg.Sandbox, procs, fuzzerV,
+-		mgr.cfg.Cover, *flagDebug, false, false)
++		mgr.cfg.Cover, *flagDebug, false, false, *flagPoC, MutateTime, RawCriticalSys, RawCriticalSysSeq)
++
+ 	outc, errc, err := inst.Run(time.Hour, mgr.vmStop, cmd)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to run fuzzer: %v", err)
+ 	}
++	
++	prog.ExecutePoCOnly = *flagPoC
+ 
+-	rep := inst.MonitorExecution(outc, errc, mgr.reporter, vm.ExitTimeout)
++	rep := inst.MonitorExecution(outc, errc, mgr.reporter, vm.ExitTimeout, managerStart, timeLimit)
+ 	if rep == nil {
++		if time.Since(managerStart) >= time.Duration(timeLimit)*time.Hour {
++			return nil, shutdownErr
++		}
+ 		// This is the only "OK" outcome.
+ 		log.Logf(0, "vm-%v: running for %v, restarting", index, time.Since(start))
+ 		return nil, nil
+@@ -593,18 +785,26 @@ func (mgr *Manager) emailCrash(crash *Crash) {
+ 	if len(mgr.cfg.EmailAddrs) == 0 {
+ 		return
+ 	}
+-	args := []string{"-s", "syzkaller: " + crash.Title}
++	origin_case := strings.Split(courier.AnalyzerPath, "/incomplete/")[1]
++	args := []string{"-s", "origin_case: " + origin_case + " syzkaller: " + crash.Title}
+ 	args = append(args, mgr.cfg.EmailAddrs...)
+ 	log.Logf(0, "sending email to %v", mgr.cfg.EmailAddrs)
+ 
+ 	cmd := exec.Command("mailx", args...)
+-	cmd.Stdin = bytes.NewReader(crash.Report.Report)
++	vals := mgr.stats.all()
++	data, err := json.MarshalIndent(vals, "", "  ")
++	if err != nil {
++		cmd.Stdin = bytes.NewReader(data)
++	} else {
++		text := fmt.Sprintf("Error in Extract mgr.stats: %v", err)
++		cmd.Stdin = bytes.NewReader([]byte(text))
++	}
+ 	if _, err := osutil.Run(10*time.Minute, cmd); err != nil {
+ 		log.Logf(0, "failed to send email: %v", err)
+ 	}
+ }
+ 
+-func (mgr *Manager) saveCrash(crash *Crash) bool {
++func (mgr *Manager) saveCrash(crash *Crash, managerStart time.Time) bool {
+ 	if crash.Type == report.MemoryLeak {
+ 		mgr.mu.Lock()
+ 		mgr.memoryLeakFrames[crash.Frame] = true
+@@ -625,15 +825,28 @@ func (mgr *Manager) saveCrash(crash *Crash) bool {
+ 		corrupted = " [corrupted]"
+ 	}
+ 	log.Logf(0, "vm-%v: crash: %v%v", crash.vmIndex, crash.Title, corrupted)
+-	if err := mgr.reporter.Symbolize(crash.Report); err != nil {
+-		log.Logf(0, "failed to symbolize report: %v", err)
+-	}
+ 
+ 	mgr.stats.crashes.inc()
++	FirstFound := false
+ 	mgr.mu.Lock()
+ 	if !mgr.crashTypes[crash.Title] {
+ 		mgr.crashTypes[crash.Title] = true
+ 		mgr.stats.crashTypes.inc()
++		log.Logf(0, "First find crash: vm-%v: crash: %v%v Until:%vs", 
++				crash.vmIndex, 
++				crash.Title, 
++				corrupted, 
++				time.Since(managerStart).Seconds(),
++			)
++		FirstFound = true
++		if err := mgr.reporter.Symbolize(crash.Report); err != nil {
++			log.Logf(0, "failed to symbolize report: %v", err)
++		} else {
++			log.Logf(0, "get maintainers: %v", crash.Maintainers)
++		}
++	} else {
++		log.Logf(0, "Already find crash: %v", crash.Title)
++		FirstFound = false
+ 	}
+ 	mgr.mu.Unlock()
+ 
+@@ -658,13 +871,14 @@ func (mgr *Manager) saveCrash(crash *Crash) bool {
+ 			return resp.NeedRepro
+ 		}
+ 	}
+-
+ 	sig := hash.Hash([]byte(crash.Title))
+ 	id := sig.String()
+ 	dir := filepath.Join(mgr.crashdir, id)
+ 	osutil.MkdirAll(dir)
+ 	if err := osutil.WriteFile(filepath.Join(dir, "description"), []byte(crash.Title+"\n")); err != nil {
+ 		log.Logf(0, "failed to write crash: %v", err)
++	} else {
++		log.Logf(0, "Save crash title: %v to dir_hash:%v", crash.Title, id)
+ 	}
+ 	// Save up to 100 reports. If we already have 100, overwrite the oldest one.
+ 	// Newer reports are generally more useful. Overwriting is also needed
+@@ -676,7 +890,7 @@ func (mgr *Manager) saveCrash(crash *Crash) bool {
+ 		if err != nil {
+ 			oldestI = i
+ 			if i == 0 {
+-				go mgr.emailCrash(crash)
++				log.Logf(0,"Not open email service now.")
+ 			}
+ 			break
+ 		}
+@@ -692,8 +906,25 @@ func (mgr *Manager) saveCrash(crash *Crash) bool {
+ 	if len(crash.Report.Report) > 0 {
+ 		osutil.WriteFile(filepath.Join(dir, fmt.Sprintf("report%v", oldestI)), crash.Report.Report)
+ 	}
+-
+-	return mgr.needLocalRepro(crash)
++	CallTrace, CallFuncs := GetCalltraceFromReport(string(crash.Report.Report))
++	if len(CallTrace) > 0 {
++		osutil.WriteFile(filepath.Join(dir, fmt.Sprintf("calltrace%v", oldestI)), []byte(CallTrace))
++	}
++	log.Logf(0, "[+] calculate calltrace similarity between RawCallTrace and Newcrash: %v", crash.Title)
++	log.Logf(0, "[CallTrace-Sim] Jaccard_Dis:%v Jaro_Sim:%v JaroWinkler_Sim:%v QGram_Dis:%v Cosine_Dis:%v Levenshtein_Dis:%v LCS_Sim:%v", 
++			stringosim.Jaccard([]rune(RawCallTrace),[]rune(CallFuncs),[]int{10}),
++			stringosim.Jaro([]rune(RawCallTrace),[]rune(CallFuncs)),
++			stringosim.JaroWinkler([]rune(RawCallTrace),[]rune(CallFuncs)),
++			stringosim.QGram([]rune(RawCallTrace),[]rune(CallFuncs)),
++			stringosim.Cosine([]rune(RawCallTrace),[]rune(CallFuncs)),
++			stringosim.Levenshtein([]rune(RawCallTrace),[]rune(CallFuncs)),
++			stringosim.LCS([]rune(RawCallTrace),[]rune(CallFuncs)))
++	if FirstFound {
++		if (stringosim.Jaro([]rune(RawCallTrace),[]rune(CallFuncs)) > CalltraceSim) {
++			return mgr.needLocalRepro(crash)
++		}
++	}
++	return false
+ }
+ 
+ const maxReproAttempts = 3
+@@ -704,7 +935,6 @@ func (mgr *Manager) needLocalRepro(crash *Crash) bool {
+ 	}
+ 	if mgr.checkResult == nil || (mgr.checkResult.Features[host.FeatureLeak].Enabled &&
+ 		crash.Type != report.MemoryLeak) {
+-		// Leak checking is very slow, don't bother reproducing other crashes.
+ 		return false
+ 	}
+ 	sig := hash.Hash([]byte(crash.Title))
+@@ -845,6 +1075,12 @@ func (mgr *Manager) saveRepro(res *repro.Result, stats *repro.Stats, hub bool) {
+ 	if len(cprogText) > 0 {
+ 		osutil.WriteFile(filepath.Join(dir, "repro.cprog"), cprogText)
+ 	}
++	if len(res.Command) > 0 {
++		command := strings.Split(res.Command, " ")
++		command[len(command)-1] = "testcase"
++		newCommand := strings.Join(command, " ")
++		osutil.WriteFile(filepath.Join(dir, "repro.command"), []byte(newCommand))
++	}
+ 	saveReproStats(filepath.Join(dir, "repro.stats"), stats)
+ }
+ 
+@@ -907,7 +1143,7 @@ func (mgr *Manager) minimizeCorpus() {
+ 		inp := ctx.(rpctype.RPCInput)
+ 		newCorpus[hash.String(inp.Prog)] = inp
+ 	}
+-	log.Logf(1, "minimized corpus: %v -> %v", len(mgr.corpus), len(newCorpus))
++	log.Logf(0, "minimized corpus: %v -> %v", len(mgr.corpus), len(newCorpus))
+ 	mgr.corpus = newCorpus
+ 	mgr.lastMinCorpus = len(newCorpus)
+ 
+@@ -1187,3 +1423,225 @@ func publicWebAddr(addr string) string {
+ 	}
+ 	return "http://" + addr
+ }
++
++// return
++// 0 for Non-critical
++// 1 for Read
++// 2 for Write
++// 4 for invalid free
++func isCriticalCrash(title string, storeRead bool) int {
++	ret := nonCritical
++	if storeRead {
++		if strings.Contains(title, "out-of-bounds Read") ||
++			strings.Contains(title, "use-after-free Read") {
++			ret |= abMemRead
++		}
++	}
++
++	if strings.Contains(title, "out-of-bounds Write") ||
++		strings.Contains(title, "use-after-free Write") {
++		ret |= abMemWrite
++	}
++
++	if strings.Contains(title, "invalid-free in") {
++		ret |= invalidFree
++	}
++	return ret
++}
++
++func ContainGrebeStruct(calltrace string) int {
++	ret := 0
++	if len(GrebeStructObj) > 0 {
++		log.Logf(0, "GrebeStructObj:")
++		for _, StructObj := range GrebeStructObj {
++			if StructObj != "" {
++				log.Logf(0, "%v", StructObj)
++			}
++		}
++	} else {
++		ret = -1
++		log.Logf(0, "GrebeStructObj is empty")
++	}
++	return ret
++}
++
++func ShowCriticalSys(CriticalSys []string) string {
++	if len(CriticalSys) > 0 {
++		for _, CriSys := range CriticalSys {
++			if CriSys != "" {
++				RawCriticalSys = fmt.Sprintf("%s%s\n", RawCriticalSys, CriSys)
++			}
++		}
++		log.Logf(0, "[info] CriticalSys:\n%v", RawCriticalSys)
++	} else {
++		log.Logf(0, "[info] CriticalSys is empty")
++	}
++	return ""
++}
++
++func ShowCriticalSysSeq(CriticalSysSeq []string) string {
++	if len(CriticalSysSeq) > 0 {
++		for _, CriSysSeq := range CriticalSysSeq {
++			if CriSysSeq != "" {
++				RawCriticalSysSeq = fmt.Sprintf("%s%s\n", RawCriticalSysSeq, CriSysSeq)
++			}
++		}
++		log.Logf(0, "[info] CriticalSysSeq:\n%v", RawCriticalSysSeq)
++	} else {
++		log.Logf(0, "[info] CriticalSysSeq is empty")
++	}
++	return ""
++}
++
++func GetCalltraceFromReport(report string) (string, string) {
++	var cgs string
++	var cg_funcs string
++	calls := GetCalls(report)
++	calls_splice := strings.Split(calls, "\n")
++
++	var clear_calls []string
++	call_trace_ends := [...]string{"entry_SYSENTER",
++								"entry_SYSCALL",
++								"ret_from_fork",
++								"bpf_prog_",
++								"Allocated by",
++								"<IRQ>",
++								"</IRQ>",
++								"Call Trace",
++								"RIP: 00"}
++	kasan_funcs := [...]string{"dump_stack",
++							"kasan_report",
++							"asan_load",
++							"print_address_description",
++							"check_memory_region_inline"}
++
++	save_flag := true
++	var cc []string
++	function := ""
++	source := ""
++	for _, call := range calls_splice {
++		for _, kasan_func := range kasan_funcs {
++			if strings.Contains(call, kasan_func) {
++				save_flag = false
++				break
++			}
++		}
++		for _, call_trace_end := range call_trace_ends {
++			if strings.Contains(call, call_trace_end) {
++				save_flag = false
++				break
++			}
++		}
++		if save_flag{
++			clear_calls = append(clear_calls, call)
++		} else {
++			save_flag = true
++		}
++	}
++
++	for _, call := range clear_calls {
++		cc = strings.Split(strings.TrimSpace(call), " ")
++		function = strings.Split(cc[0], "+")[0]
++		if len(cc) < 2 {
++			source = "null"
++		} else {
++			source = cc[1]
++		}
++		if len(function) > 0 {
++			cgs = fmt.Sprintf("%s%s %s\n", cgs, function, source)
++			cg_funcs = fmt.Sprintf("%s%s\n", cg_funcs, function)
++		}
++	}
++	return cgs, cg_funcs
++}
++
++func GetCalls(report string) string {
++	kasan_pattern := `Call Trace:\n([\s\S]*?)\n(RIP: 00|Allocated by task|===)`
++	kasan_pattern2 := `Call Trace:\n([\s\S]*?)\nAllocated by task`
++
++	warn := `RIP: 0010:([\s\S]*?)RSP[\s\S]*?Call Trace:\n([\s\S]*?)(Kernel Offset|\<\/IRQ\>|RIP: 00|Modules linked in)`
++	warn2 := `RIP: 0010:([\s\S]*?)Code[\s\S]*?Call Trace:\n([\s\S]*?)(Kernel Offset|\<\/IRQ\>|RIP: 00|Modules linked in)`
++	warn3 := `RIP: 0010:([\s\S]*?)Code[\s\S]*?R13:.*?\n([\s\S]*?)(Kernel Offset|\<\/IRQ\>|RIP: 00|Modules linked in)`
++	warn4 := `RIP: 0010:([\s\S]*?)RSP[\s\S]*?R13:.*?\n([\s\S]*?)(Kernel Offset|\<\/IRQ\>|RIP: 00|Modules linked in)`
++
++	pattern3 := `Call Trace:\n([\s\S]*?)\n(Modules linked in| ret_from_fork)`
++	pattern4 := `RIP: 0010:([\s\S]*)Code[\s\S]*?Call Trace:\n([\s\S]*?)(Kernel Offset|entry_SYSCALL)`
++
++	if strings.Contains(report, "WARNING") || strings.Contains(report, "GPF") || strings.Contains(report, "kernel BUG at") || strings.Contains(report, "BUG: unable to handle"){
++		if found_warn,err := GetCallTrace(warn, report); err == nil {
++			log.Logf(0,"GetCalls pattern: found_warn")
++			if len(found_warn) >= 2 {
++				return found_warn[1]+found_warn[2]
++			}
++		} else {
++			log.Logf(0,"GetCalls pattern: not found_warn")
++		}
++		if found_warn2,err := GetCallTrace(warn2, report); err == nil {
++			log.Logf(0,"GetCalls pattern: found_warn2")
++			if len(found_warn2) >= 2 {
++				return found_warn2[1]+found_warn2[2]
++			}
++		} else {
++			log.Logf(0,"GetCalls pattern: not found_warn2")
++		}
++		if found_warn3,err := GetCallTrace(warn3, report); err == nil {
++			log.Logf(0,"GetCalls pattern: found_warn3")
++			if len(found_warn3) >= 2 {
++				return found_warn3[1]+found_warn3[2]
++			}
++		} else {
++			log.Logf(0,"GetCalls pattern: not found_warn3")
++		}
++		if found_warn4,err := GetCallTrace(warn4, report); err == nil {
++			log.Logf(0,"GetCalls pattern: found_warn4")
++			if len(found_warn4) >= 2 {
++				return found_warn4[1]+found_warn4[2]
++			}
++		} else {
++			log.Logf(0,"GetCalls pattern: not found_warn4")
++		}
++	} else if strings.Contains(report, "KASAN:") {
++		if found_kasan,err := GetCallTrace(kasan_pattern, report); err == nil {
++			log.Logf(0,"GetCalls pattern: found_kasan")
++			return found_kasan[1]
++		} else {
++			log.Logf(0,"GetCalls pattern: not found_kasan")
++		}
++		if found_kasan2,err := GetCallTrace(kasan_pattern2, report); err == nil {
++			log.Logf(0,"GetCalls pattern: found_kasan2")
++			return found_kasan2[1]
++		} else {
++			log.Logf(0,"GetCalls pattern: not found_kasan2")
++		}
++	}
++	if found_pat3,err := GetCallTrace(pattern3, report); err == nil {
++		log.Logf(0,"GetCalls pattern: found_pat3")
++		return found_pat3[1]
++	} else {
++		log.Logf(0,"GetCalls pattern: not found_pat3")
++	}
++	if found_pat4,err := GetCallTrace(pattern4, report); err == nil {
++		log.Logf(0,"GetCalls pattern: found_pat4")
++		return found_pat4[1]+found_pat4[2]
++	} else {
++		log.Logf(0,"GetCalls pattern: not found_pat4")
++	}
++	log.Logf(0,"GetCalls pattern: not found any pattern!")
++	return ""
++}
++
++func GetCallTrace(pattern string, report string) ([]string, error) {
++	p := regexp.MustCompile(pattern)
++	m := p.FindStringSubmatch(report)
++	if m == nil {
++		return nil, fmt.Errorf("failed to FindStringSubmatch")
++	}
++	trace := m[1]
++	if strings.Contains(trace, "invalid_op") {
++		return nil, fmt.Errorf("trace contain invalid_op")
++	}
++	if strings.Contains(trace, "Code: ") {
++		return nil, fmt.Errorf("trace contain Code:")
++	}
++	return m, nil
++}
+\ No newline at end of file
+diff --git a/syz-manager/rpc.go b/syz-manager/rpc.go
+index 91e31dbd9..c65e0f144 100644
+--- a/syz-manager/rpc.go
++++ b/syz-manager/rpc.go
+@@ -7,9 +7,12 @@ import (
+ 	"fmt"
+ 	"math/rand"
+ 	"net"
++	"os"
+ 	"sync"
+ 	"time"
++	"errors"
+ 
++	"github.com/google/syzkaller/courier"
+ 	"github.com/google/syzkaller/pkg/cover"
+ 	"github.com/google/syzkaller/pkg/log"
+ 	"github.com/google/syzkaller/pkg/rpctype"
+@@ -54,6 +57,9 @@ type RPCManagerView interface {
+ 	newInput(inp rpctype.RPCInput, sign signal.Signal) bool
+ 	candidateBatch(size int) []rpctype.RPCCandidate
+ 	rotateCorpus() bool
++	parseCustomizedTestcase(a rpctype.GetCallsFromFuzzerArgs, ch chan int)
++	calculateMutatedSimilarity(a rpctype.GetMutateSimilarityArgs, ch chan int)
++
+ }
+ 
+ func startRPCServer(mgr *Manager) (int, error) {
+@@ -309,3 +315,55 @@ func (serv *RPCServer) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
+ 		a.Name, len(r.Candidates), len(r.NewInputs), len(r.MaxSignal.Elems))
+ 	return nil
+ }
++
++func (serv *RPCServer) GetQueueLen(a *rpctype.GetQueueLenArgs, r *rpctype.GetQueueLenRes) error {
++	switch a.Flag {
++	case courier.Mutating:
++		r.Length = len(courier.MutateArgsQueue)
++		break
++	case courier.Commands:
++		r.Length = len(courier.CommandsQueue)
++		break
++	case courier.S2E:
++		r.Length = len(courier.S2EArgsQueue)
++	}
++	return nil
++}
++
++func (serv *RPCServer) RetrieveArgsQueue(a *rpctype.ProgQueue, pq *rpctype.ProgQueue) error {
++	courier.Mutex.Lock()
++	p := courier.RetrieveFirstArg(courier.Mutating)
++	if p != nil {
++		*pq = p.(rpctype.ProgQueue)
++	}
++	courier.Mutex.Unlock()
++	return nil
++}
++
++func (serv *RPCServer) EmitSignal(a *rpctype.FuzzerSignal, pq *rpctype.FuzzerSignal) error {
++	courier.Mutex.Lock()
++	sg := a.Signal
++	log.Logf(0, "A signal from fuzzer: %s\n", sg)
++	courier.Mutex.Unlock()
++	return nil
++}
++
++func (serv *RPCServer) GetCallsFromFuzzer(a *rpctype.GetCallsFromFuzzerArgs, r *int) error {
++	ch := make(chan int)
++	go serv.mgr.parseCustomizedTestcase(*a, ch)
++	exitcode := <-ch
++	if exitcode == -1 {
++		os.Exit(3)
++	}
++	return nil
++}
++
++func (serv *RPCServer) GetMutateSimilarity(a *rpctype.GetMutateSimilarityArgs, r *int) error {
++	ch := make(chan int)
++	go serv.mgr.calculateMutatedSimilarity(*a, ch)
++	exitcode := <-ch
++	if exitcode == -1 {
++		return errors.New("MutateProg not sim to TestcaseProg")
++	}
++	return nil
++}
+\ No newline at end of file
+diff --git a/syz-manager/utilities.go b/syz-manager/utilities.go
+new file mode 100644
+index 000000000..980bd0630
+--- /dev/null
++++ b/syz-manager/utilities.go
+@@ -0,0 +1,159 @@
++package main
++
++import (
++	"io/ioutil"
++	"math/rand"
++	_ "net/http/pprof"
++	"os"
++	"time"
++
++	"github.com/google/syzkaller/courier"
++	"github.com/google/syzkaller/pkg/log"
++	"github.com/google/syzkaller/pkg/rpctype"
++	"github.com/google/syzkaller/prog"
++	"github.com/google/syzkaller/stringosim"
++)
++
++var TestcasePath string
++var TestcaseProg []byte
++var GrebeStructPath string 
++var GrebeStructObj []string
++var CallTracePath string
++var CriticalSys []string
++var RawCriticalSys string
++var CriticalSysSeq []string
++var RawCriticalSysSeq string
++var RawCallTrace string
++
++var flagParseTestcase = false
++var flagExtraMutating = false
++var MutateTime = 500
++var CalltraceSim float64 = 0.5
++var ReproSim float64 = 0.5
++
++
++//Read and parse testcase, send it to fuzzer
++func (mgr *Manager) parseCustomizedTestcase(a rpctype.GetCallsFromFuzzerArgs, ch chan int) {
++	if flagParseTestcase {
++		ch <- 0
++		return
++	}
++	flagParseTestcase = true
++	var corpus []*prog.Prog
++	info, err := os.Stat(TestcasePath)
++	if !os.IsNotExist(err) {
++		if !info.IsDir() {
++			fileCache, err := os.Open(TestcasePath)
++			if err != nil {
++				log.Logf(0, "Error occur at parseCustomizedTestcase: %v\n", err)
++				ch <- 1
++				return
++			}
++			defer fileCache.Close()
++			testcase_raw, err := ioutil.ReadFile(TestcasePath)
++			if err != nil {
++				log.Logf(0, "Error occur at parseCustomizedTestcase: %v\n", err)
++				ch <- 1
++				return
++			}
++			testcase := courier.RemoveComments(testcase_raw)
++			calls := make(map[*prog.Syscall]bool)
++			rnd := rand.New(rand.NewSource(time.Now().UnixNano() + int64(4)*1e12))
++			for _, id := range a.EnabledCalls[a.Sandbox] {
++				calls[mgr.target.Syscalls[id]] = true
++			}
++			prios := mgr.target.CalculatePriorities(corpus)
++			choiceTable := mgr.target.BuildChoiceTable(prios, calls)
++			p, err := mgr.target.Deserialize(testcase, prog.NonStrict)
++			if err != nil {
++				createTemplatePatch(mgr.cfg.Syzkaller)
++				log.Logf(0, "Fail to parse testcase: %v\n", err)
++				ch <- -1
++				return
++			}
++			prog.NOfCalls = len(p.Calls)
++			prog.PocProg = string(testcase)
++			TestcaseProg = testcase
++			courier.AppendTestcase(testcase, testcase, prog.NOfCalls)
++			for i := 1; i < MutateTime; i++ {
++				p := p.Clone()
++				p.Mutate(rnd, prog.RecommendedCalls, choiceTable, corpus)
++				courier.AppendTestcase(p.Serialize(), []byte(prog.PocProg), prog.NOfCalls)
++			}
++			rnd = rand.New(rand.NewSource(time.Now().UnixNano() + int64(4)*1e12))
++			if !prog.ExecutePoCOnly {
++				for {
++					p := p.Clone()
++					p.Mutate(rnd, prog.RecommendedCalls, choiceTable, corpus)
++					courier.AppendTestcase(p.Serialize(), []byte(prog.PocProg), prog.NOfCalls)
++					time.Sleep(1 * time.Second)
++					if flagExtraMutating {
++						mgr.doExtraMutate(choiceTable, corpus)
++						flagExtraMutating = false
++					}
++				}
++			}
++			for {
++				if flagExtraMutating {
++					mgr.doExtraMutate(choiceTable, corpus)
++					flagExtraMutating = false
++				}
++				time.Sleep(1 * time.Second)
++			}
++			ch <- 0
++			return
++		}
++	}
++	log.Logf(0, "Error occur at parseCustomizedTestcase: %v\n", err)
++	return
++}
++
++func (mgr *Manager) doExtraMutate(choiceTable *prog.ChoiceTable, corpus []*prog.Prog) {
++	log.Logf(0, "doExtraMutate")
++	pq := courier.RetrieveFirstArg(courier.Critical)
++	if pq != nil {
++		testcase := pq.(rpctype.ProgQueue).Prog
++		oriP, err := mgr.target.Deserialize(testcase, prog.NonStrict)
++		if err != nil {
++			return
++		}
++		rnd := rand.New(rand.NewSource(time.Now().UnixNano() + int64(4)*1e12))
++		for i := 1; i < MutateTime; i++ {
++			p := oriP.Clone()
++			p.Mutate(rnd, prog.RecommendedCalls, choiceTable, corpus)
++			courier.AppendTestcase(p.Serialize(), testcase, len(oriP.Calls))
++		}
++	}
++}
++
++func createTemplatePatch(base string) {
++	f, err := os.Create(base + "/CorrectTemplate")
++	if err != nil {
++		log.Logf(0, "Fail to open CorrectTemplate: %v\n", err)
++	}
++	defer f.Close()
++	if prog.MissingSyscall != "" {
++		f.Write([]byte("syscall:" + prog.MissingSyscall))
++	}
++	if prog.LastGroupArg != "" {
++		f.Write([]byte("arg:" + prog.LastGroupArg))
++	}
++}
++
++func (mgr *Manager) calculateMutatedSimilarity(a rpctype.GetMutateSimilarityArgs, ch chan int) {
++	MutateProg := a.MutatePorg
++	log.Logf(0, "calculate similarity between TestcaseProg-Len:%v and MutateProg-Len:%v", len(string(TestcaseProg)),len(string(MutateProg)))
++	Jaccard_Dis := stringosim.Jaccard([]rune(string(TestcaseProg)),[]rune(string((MutateProg))),[]int{10})
++	Jaro_Sim := stringosim.Jaro([]rune(string(TestcaseProg)),[]rune(string((MutateProg))))
++	JaroWinkler_Sim := stringosim.JaroWinkler([]rune(string(TestcaseProg)),[]rune(string((MutateProg))))
++	QGram_Dis := stringosim.QGram([]rune(string(TestcaseProg)),[]rune(string((MutateProg))))
++	Cosine_Dis := stringosim.Cosine([]rune(string(TestcaseProg)),[]rune(string((MutateProg))))
++	log.Logf(0, "Jaccard_Dis:%v Jaro_Sim:%v JaroWinkler_Sim:%v QGram_Dis:%v Cosine_Dis:%v", 
++				Jaccard_Dis, Jaro_Sim, JaroWinkler_Sim, QGram_Dis, Cosine_Dis)
++	if JaroWinkler_Sim < 0.5 {
++		log.Logf(0, "[-] MutateProg not sim to TestcaseProg by:%v, abandon it", JaroWinkler_Sim)
++		ch <- -1
++		return
++	}
++	return 
++}
+diff --git a/tools/syz-branch2addr/syz-branch2addr.go b/tools/syz-branch2addr/syz-branch2addr.go
+new file mode 100644
+index 000000000..c5dbe4c29
+--- /dev/null
++++ b/tools/syz-branch2addr/syz-branch2addr.go
+@@ -0,0 +1,338 @@
++package main
++
++import (
++	"bufio"
++	"bytes"
++	"crypto/md5"
++	"encoding/hex"
++	"encoding/json"
++	"flag"
++	"fmt"
++	"io/ioutil"
++	"log"
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++
++	"github.com/google/syzkaller/pkg/osutil"
++	"github.com/google/syzkaller/pkg/symbolizer"
++)
++
++type Range struct {
++	Funcname string
++	Start    uint64
++	End      uint64
++	File     string
++	Line     int
++	Found    bool
++}
++
++type BranchNode struct {
++	followBy uint64
++	jumpTo   uint64
++}
++
++type TraceInfo struct {
++	File string
++	Line int
++}
++
++type Trace struct {
++	condJump    TraceInfo
++	correctPath TraceInfo
++	wrongPath   TraceInfo
++}
++
++var branch map[uint64]map[string]uint64
++var trace []Trace
++
++func main() {
++	var (
++		f_funcname    = flag.String("f", "", "Funcname")
++		f_vmlinuxPath = flag.String("v", "", "Path to vmlinux")
++		f_rawformat   = flag.Bool("r", false, "Parsing the raw vmlinux.")
++		f_dCache      = flag.String("d", "", "Delete an cache, follow by the path to vmlinux")
++		f_usage       = flag.Bool("u", false, "Get the usage")
++		f_strict      = flag.Bool("s", false, "Strictly match")
++		fTrace        = flag.String("t", "", "Path to trace file")
++		targetOS      = flag.String("-os", "linux", "OS of target, default as linux")
++		targetArch    = flag.String("-arch", "amd64", "arch of target, default as amd64")
++	)
++	flag.Parse()
++	if (*f_vmlinuxPath == "" && *f_dCache == "" && *fTrace == "") || (*f_usage) {
++		fmt.Printf("Usage:  syz-func2addr [-r] [-d path_of_vmlinux] [-f funcname [-v path_of_vmlinux]]\n    eg. syz-func2addr -f snprintf_int_array -v /home/user/linux/vmlinux -r -s\n")
++		return
++	}
++	if !buildTrace(*fTrace) {
++		fmt.Printf("Fail to build trace")
++		return
++	}
++	branch = make(map[uint64]map[string]uint64)
++	var n uint64
++	n = 0
++	var list []Range
++	list = append(list, Range{Start: 0x0, End: 0x0, Found: false})
++
++	cache_exist, cache_path := isCacheExist(*f_dCache, *f_vmlinuxPath)
++	if *f_dCache != "" {
++		if cache_exist {
++			_ = os.Remove(cache_path)
++		}
++		return
++	}
++
++	var frames []symbolizer.Frame
++	if cache_exist {
++		frames, branch = openAndParseCache(cache_path)
++		fmt.Printf("Found cache...\n")
++	} else {
++		pcs, _ := coveredPcs(*targetArch, *f_vmlinuxPath, *f_rawformat)
++		if len(pcs) == 0 {
++			fmt.Printf("It seems vmlinux doesn't have any <__sanitizer_cov_trace_pc> functions. Try '-r' argument\n")
++			cache_exist = true
++		}
++		fmt.Printf("Scan OK\n")
++		frames, _, _ = symbolize(*f_vmlinuxPath, pcs, *targetArch, *targetOS)
++		fmt.Printf("Symbolize OK\n")
++	}
++
++	for _, frame := range frames {
++		if (strings.Contains(frame.Func, *f_funcname) && *f_strict == false) ||
++			(frame.Func == *f_funcname && *f_strict == true) {
++			if list[n].Found == false {
++				list[n].Funcname = frame.Func
++				list[n].Start = frame.PC
++				list[n].End = frame.PC
++				list[n].Line = frame.Line
++				list[n].File = frame.File
++				list[n].Found = true
++			} else {
++				list[n].End = frame.PC
++			}
++		} else if frame.Inline != true && frame.Func != *f_funcname && list[n].Found == true {
++			list = append(list, Range{Start: 0x0, End: 0x0, Found: false})
++			n++
++		}
++		if node, ok := branch[frame.PC]; ok {
++			for _, e := range trace {
++				if stripPrefix(frame.File) == e.condJump.File && frame.Line == e.condJump.Line {
++					followBy := node["followBy"]
++					jumpTo := node["jumpTo"]
++					r, _, _ := symbolize(*f_vmlinuxPath, []uint64{followBy}, *targetArch, *targetOS)
++					TFile := r[0].File
++					TLine := r[0].Line
++					r, _, _ = symbolize(*f_vmlinuxPath, []uint64{jumpTo + 5}, *targetArch, *targetOS) //A potential bug here is that the next inst is jmp xxx, need a special checker
++					FFile := r[0].File
++					FLine := r[0].Line
++					if stripPrefix(TFile) == e.correctPath.File && stripPrefix(FFile) == e.correctPath.File {
++						fmt.Printf("%d %d %d\n", TLine, FLine, e.correctPath.Line)
++						if TLine <= e.correctPath.Line && FLine > e.correctPath.Line {
++							//True
++							fmt.Printf("cond: %x correct: %x wrong: %x\n", frame.PC, followBy, jumpTo)
++						}
++						if FLine <= e.correctPath.Line {
++							//False
++							fmt.Printf("cond: %x correct: %x wrong: %x\n", frame.PC, jumpTo, followBy)
++						}
++					}
++				}
++			}
++
++		}
++	}
++
++	if cache_exist == false {
++		data1, _ := json.Marshal(frames)
++		data2, _ := json.Marshal(branch)
++		data1 = append(data1, []byte("\n")...)
++		data := append(data1, data2...)
++		createAndWriteCache(cache_path, data)
++	}
++	list = list[0 : len(list)-1 : len(list)]
++	for _, e := range list {
++		fmt.Printf("Function:%s\nStart:%x\nEnd:%x\nLocation:%s:%d\nFound:%t\n", e.Funcname, e.Start, e.End, e.File, e.Line, e.Found)
++	}
++}
++
++var prefix = ""
++
++func stripPrefix(path string) string {
++	parts := strings.Split(path, "/")
++	if prefix != "" {
++		r := strings.Split(path, prefix)
++		if len(r) == 2 {
++			return r[1]
++		}
++	}
++	for i := len(parts) - 1; i >= 0; i-- {
++		if parts[i] == "linux" {
++			prefix = strings.Join(parts[:i+1], "/") + "/"
++			return strings.Join(parts[i+1:], "/")
++		}
++	}
++	return path
++}
++
++func buildTrace(path2Trace string) bool {
++	var file string
++	var line int
++	traceFile, err := os.Open(path2Trace)
++	if err != nil {
++		fmt.Println(err)
++		return false
++	}
++	r := bufio.NewReader(traceFile)
++	for {
++		ln, _, err := r.ReadLine()
++		if ln == nil {
++			return true
++		}
++		if err != nil {
++			fmt.Println(err)
++			return false
++		}
++		space := bytes.IndexByte(ln, ' ')
++		file, line = parseTrace(ln[:space])
++		condJump := TraceInfo{File: file, Line: line}
++		file, line = parseTrace(ln[space+1:])
++		correctPath := TraceInfo{File: file, Line: line}
++		trace = append(trace, Trace{condJump: condJump, correctPath: correctPath})
++	}
++}
++
++func parseTrace(line []byte) (string, int) {
++	colon := bytes.IndexByte(line, ':')
++	val, _ := strconv.Atoi(string(line[colon+1:]))
++	return string(line[:colon]), val
++}
++
++func getFrameByPc(base int, frames []symbolizer.Frame, pc uint64) (string, int) {
++	for i := base; i < len(frames); i++ {
++		if frames[i].PC == pc {
++			return frames[i].File, frames[i].Line
++		}
++	}
++	return "", -1
++}
++
++func coveredPcs(arch, bin string, rawformat bool) ([]uint64, error) {
++	cmd := osutil.Command("objdump", "-d", "--no-show-raw-insn", bin)
++	stdout, err := cmd.StdoutPipe()
++	if err != nil {
++		return nil, err
++	}
++	defer stdout.Close()
++	if err := cmd.Start(); err != nil {
++		return nil, err
++	}
++	defer cmd.Wait()
++	var pcs []uint64
++	s := bufio.NewScanner(stdout)
++
++	iBase := 18
++	var jumpTo, addr uint64
++	jumpTo = 0
++	addr = 0
++	for s.Scan() {
++		ln := s.Bytes()
++		colon := bytes.IndexByte(ln, ':')
++		if colon == -1 {
++			continue
++		}
++		pc, err := strconv.ParseUint(string(ln[:colon]), 16, 64)
++		if err != nil {
++			continue
++		}
++		//find a conditional jump
++
++		if jumpTo != 0 && addr != 0 {
++			branch[addr] = map[string]uint64{"jumpTo": jumpTo, "followBy": pc}
++			jumpTo = 0
++			addr = 0
++		}
++		if ln[iBase] == 'j' {
++			if pos := bytes.Index(ln, []byte("jmp")); pos != -1 {
++				continue
++			}
++			pos := bytes.Index(ln[iBase:], []byte("f"))
++			if (pos != -1) && (len(ln[iBase:]) > pos+16) {
++				jumpTo, err = strconv.ParseUint(string(ln[pos+iBase:pos+iBase+16]), 16, 64)
++				if err != nil {
++					continue
++				}
++				addr = pc
++			}
++			pcs = append(pcs, pc)
++		}
++	}
++	if err := s.Err(); err != nil {
++		return nil, err
++	}
++	return pcs, nil
++}
++
++func symbolize(vmlinux string, pcs []uint64, arch, os string) ([]symbolizer.Frame, string, error) {
++	symb := symbolizer.NewSymbolizer()
++	defer symb.Close()
++
++	frames, err := symb.SymbolizeArray(vmlinux, pcs)
++	if err != nil {
++		return nil, "", err
++	}
++
++	return frames, "", nil
++}
++
++func openAndParseCache(path string) ([]symbolizer.Frame, map[uint64]map[string]uint64) {
++	var frame []symbolizer.Frame
++	branch := make(map[uint64]map[string]uint64)
++
++	jsonFile, err := os.Open(path)
++	if err != nil {
++		fmt.Println(err)
++		return nil, nil
++	}
++	data, _ := ioutil.ReadAll(jsonFile)
++	newln := bytes.IndexByte(data, '\n')
++
++	json.Unmarshal([]byte(data[:newln]), &frame)
++	json.Unmarshal([]byte(data[newln+1:]), &branch)
++	jsonFile.Close()
++	return frame, branch
++}
++
++func createAndWriteCache(path string, data []byte) {
++	jsonFile, err := os.Create(path)
++	if err != nil {
++		fmt.Println(err)
++		return
++	}
++	jsonFile.Write(data)
++	jsonFile.Close()
++}
++
++func isCacheExist(_dCache, _vmlinuxPath string) (bool, string) {
++	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
++	if err != nil {
++		log.Fatal(err)
++	}
++	cache_base := dir + "/fun2addr_cache"
++	if _, err := os.Stat(cache_base); os.IsNotExist(err) {
++		var mode os.FileMode
++		mode = 0755
++		os.Mkdir(cache_base, mode)
++	}
++	h := md5.New()
++	if _dCache != "" {
++		h.Write([]byte(_dCache))
++	} else {
++		h.Write([]byte(_vmlinuxPath))
++	}
++	hash := hex.EncodeToString(h.Sum(nil))
++	cache_path := cache_base + "/" + string(hash[:len(hash)])
++	if _, err := os.Stat(cache_path); os.IsNotExist(err) {
++		return false, cache_path
++	}
++	return true, cache_path
++}
+diff --git a/tools/syz-crush/crush.go b/tools/syz-crush/crush.go
+index 33b9ccef6..6796b061b 100644
+--- a/tools/syz-crush/crush.go
++++ b/tools/syz-crush/crush.go
+@@ -113,7 +113,7 @@ func runInstance(cfg *mgrconfig.Config, reporter report.Reporter, vmPool *vm.Poo
+ 	}
+ 
+ 	log.Logf(0, "vm-%v: crushing...", index)
+-	rep := inst.MonitorExecution(outc, errc, reporter, vm.ExitTimeout)
++	rep := inst.MonitorExecution(outc, errc, reporter, vm.ExitTimeout, time.Now(), -1)
+ 	if rep == nil {
+ 		// This is the only "OK" outcome.
+ 		log.Logf(0, "vm-%v: running long enough, restarting", index)
+diff --git a/tools/syz-logparser/syz-logparser.go b/tools/syz-logparser/syz-logparser.go
+new file mode 100644
+index 000000000..b613297e5
+--- /dev/null
++++ b/tools/syz-logparser/syz-logparser.go
+@@ -0,0 +1,89 @@
++package main
++
++import (
++	"bufio"
++	"flag"
++	"fmt"
++	"os"
++
++	"github.com/google/syzkaller/pkg/mgrconfig"
++	"github.com/google/syzkaller/pkg/report"
++)
++
++func main() {
++	var (
++		flagInput  = flag.String("i", "", "input: path of a raw bug report")
++		flagOutput = flag.String("o", "", "output: path of a decent bug report")
++		flagUsage  = flag.Bool("u", false, "Get the usage")
++		flagConfig = flag.String("cfg", "", "Path of syzkaller config")
++	)
++	flag.Parse()
++	if *flagInput == "" || *flagConfig == "" || *flagOutput == "" || *flagUsage {
++		fmt.Printf("Usage:  syz-logparser -cfg path2cfg -i path2log -o path2write\n")
++		return
++	}
++
++	cfg, err := mgrconfig.LoadFile(*flagConfig)
++	if err != nil {
++		fmt.Println(err)
++		return
++	}
++	output := loadLog(*flagInput)
++	if len(output) == 0 {
++		fmt.Printf("No bug report found in the given path\n")
++		return
++	}
++	rep, err := report.NewReporter(cfg)
++	if err != nil {
++		fmt.Println(err)
++		return
++	}
++	report := rep.Parse(output)
++	if err := rep.Symbolize(report); err != nil {
++		fmt.Println(err)
++		return
++	}
++
++	if !writeLog(*flagOutput, report.Report) {
++		fmt.Println("Fail to write to the given path")
++		return
++	}
++}
++
++func loadLog(path string) []byte {
++	var output []byte
++
++	logFile, err := os.Open(path)
++	if err != nil {
++		fmt.Println(err)
++		return output
++	}
++	r := bufio.NewReader(logFile)
++	for {
++		ln, _, err := r.ReadLine()
++		if ln == nil {
++			break
++		}
++		if err != nil {
++			fmt.Println(err)
++			break
++		}
++		ln = append(ln, '\n')
++		output = append(output, ln...)
++	}
++	logFile.Close()
++	return output
++}
++
++func writeLog(path string, output []byte) bool {
++	logFile, err := os.Create(path)
++	if err != nil {
++		fmt.Println(err)
++		return false
++	}
++	w := bufio.NewWriter(logFile)
++	w.Write(output)
++	w.Flush()
++	logFile.Close()
++	return true
++}
+diff --git a/tools/syz-runtest/runtest.go b/tools/syz-runtest/runtest.go
+index 76c120cd9..18bb2924e 100644
+--- a/tools/syz-runtest/runtest.go
++++ b/tools/syz-runtest/runtest.go
+@@ -184,12 +184,12 @@ func (mgr *Manager) boot(name string, index int) (*report.Report, error) {
+ 	}
+ 	cmd := instance.FuzzerCmd(fuzzerBin, executorCmd, name,
+ 		mgr.cfg.TargetOS, mgr.cfg.TargetArch, fwdAddr, mgr.cfg.Sandbox, mgr.cfg.Procs, 0,
+-		mgr.cfg.Cover, mgr.debug, false, true)
++		mgr.cfg.Cover, mgr.debug, false, true, false, 500, "", "")
+ 	outc, errc, err := inst.Run(time.Hour, mgr.vmStop, cmd)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to run fuzzer: %v", err)
+ 	}
+-	rep := inst.MonitorExecution(outc, errc, mgr.reporter, vm.ExitNormal)
++	rep := inst.MonitorExecution(outc, errc, mgr.reporter, vm.ExitNormal, time.Now(), -1)
+ 	return rep, nil
+ }
+ 
+diff --git a/vm/qemu/qemu.go b/vm/qemu/qemu.go
+index bddace8f6..64f52e90d 100644
+--- a/vm/qemu/qemu.go
++++ b/vm/qemu/qemu.go
+@@ -186,7 +186,7 @@ var linuxCmdline = []string{
+ 	"earlyprintk=serial",
+ 	"oops=panic",
+ 	"nmi_watchdog=panic",
+-	"panic_on_warn=1",
++	//"panic_on_warn=1",
+ 	"panic=1",
+ 	"ftrace_dump_on_oops=orig_cpu",
+ 	"rodata=n",
+@@ -383,6 +383,7 @@ func (inst *instance) boot() error {
+ 			)
+ 		}
+ 		cmdline = append(cmdline, inst.cfg.Cmdline)
++		cmdline = append(cmdline, "kasan_multi_shot=1")
+ 		args = append(args,
+ 			"-kernel", inst.cfg.Kernel,
+ 			"-append", strings.Join(cmdline, " "),
+diff --git a/vm/vm.go b/vm/vm.go
+index 1b6e7eb2e..e35d76dfa 100644
+--- a/vm/vm.go
++++ b/vm/vm.go
+@@ -15,6 +15,7 @@ import (
+ 	"path/filepath"
+ 	"time"
+ 
++	"github.com/google/syzkaller/pkg/log"
+ 	"github.com/google/syzkaller/pkg/mgrconfig"
+ 	"github.com/google/syzkaller/pkg/osutil"
+ 	"github.com/google/syzkaller/pkg/report"
+@@ -162,7 +163,7 @@ const (
+ // Exit says which exit modes should be considered as errors/OK.
+ // Returns a non-symbolized crash report, or nil if no error happens.
+ func (inst *Instance) MonitorExecution(outc <-chan []byte, errc <-chan error,
+-	reporter report.Reporter, exit ExitCondition) (rep *report.Report) {
++	reporter report.Reporter, exit ExitCondition, managerStart time.Time, timeLimit int) (rep *report.Report) {
+ 	mon := &monitor{
+ 		inst:     inst,
+ 		outc:     outc,
+@@ -233,6 +234,10 @@ func (inst *Instance) MonitorExecution(outc <-chan []byte, errc <-chan error,
+ 			if mon.matchPos < 0 {
+ 				mon.matchPos = 0
+ 			}
++			if timeLimit >= 0 && time.Since(managerStart) >= time.Duration(timeLimit)*time.Hour {
++				log.Logf(0, "running for %d hours, exit now.", timeLimit)
++				return nil
++			}
+ 		case <-ticker.C:
+ 			// Detect both "not output whatsoever" and "kernel episodically prints
+ 			// something to console, but fuzzer is not actually executing programs".
+@@ -257,7 +262,7 @@ func (inst *Instance) MonitorExecution(outc <-chan []byte, errc <-chan error,
+ 				mon.waitForOutput()
+ 			}
+ 			rep := &report.Report{
+-				Title:      noOutputCrash,
++				Title:      NoOutputCrash,
+ 				Output:     mon.output,
+ 				Suppressed: report.IsSuppressed(mon.reporter, mon.output),
+ 			}
+@@ -353,7 +358,7 @@ const (
+ 	maxErrorLength = 256
+ 
+ 	lostConnectionCrash  = "lost connection to test machine"
+-	noOutputCrash        = "no output from test machine"
++	NoOutputCrash        = "no output from test machine"
+ 	timeoutCrash         = "timed out"
+ 	executingProgramStr1 = "executing program"  // syz-fuzzer output
+ 	executingProgramStr2 = "executed programs:" // syz-execprog output
+diff --git a/vm/vm_test.go b/vm/vm_test.go
+index 73c3198a0..0cca48fa9 100644
+--- a/vm/vm_test.go
++++ b/vm/vm_test.go
+@@ -218,7 +218,7 @@ var tests = []*Test{
+ 		Body: func(outc chan []byte, errc chan error) {
+ 		},
+ 		Report: &report.Report{
+-			Title: noOutputCrash,
++			Title: NoOutputCrash,
+ 		},
+ 	},
+ 	{
+@@ -230,7 +230,7 @@ var tests = []*Test{
+ 			}
+ 		},
+ 		Report: &report.Report{
+-			Title: noOutputCrash,
++			Title: NoOutputCrash,
+ 		},
+ 	},
+ 	{
+@@ -345,7 +345,7 @@ func testMonitorExecution(t *testing.T, test *Test) {
+ 		test.Body(testInst.outc, testInst.errc)
+ 		done <- true
+ 	}()
+-	rep := inst.MonitorExecution(outc, errc, reporter, test.Exit)
++	rep := inst.MonitorExecution(outc, errc, reporter, test.Exit, time.Now(), -1)
+ 	<-done
+ 	if test.Report != nil && rep == nil {
+ 		t.Fatalf("got no report")

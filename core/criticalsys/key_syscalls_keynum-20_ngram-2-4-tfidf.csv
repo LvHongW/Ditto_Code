@@ -1,0 +1,21 @@
+WARNING,INFO,GPF,BUG,UAF,OOB,IF
+commom,commom,commom,commom,commom,commom,commom
+commom,commom,commom,commom,commom,commom,syz_io_uring_setup io_uring_enter
+commom,commom,commom,commom,commom,commom,commom
+commom,commom,commom,commom,commom,commom,commom
+commom,commom,commom,commom,commom,commom,commom
+commom,socket ioctl sendmsg,commom,commom,commom,commom,commom
+commom,socket socket ioctl,commom,commom,commom,commom,commom
+commom,socket socket ioctl sendmsg,commom,commom,commom,add_key add_key,commom
+commom,commom,commom,commom,commom,commom,mmap syz_open_dev
+commom,commom,commom,commom,socket syz_genetlink_get_family_id sendmsg,commom,commom
+commom,commom,commom,commom,commom,commom,mmap syz_open_dev ioctl
+commom,commom,commom,commom,commom,commom,mmap socket bind
+commom,syz_io_uring_setup syz_io_uring_submit,commom,commom,syz_usb_connect syz_usb_control_io,add_key add_key add_key,commom
+commom,commom,commom,commom,commom,commom,io_uring_setup socket io_uring_register
+commom,commom,mmap bpf,commom,commom,commom,socket io_uring_register
+commom,sendmsg socket sendmsg,syz_init_net_socket sendmsg,commom,commom,commom,io_uring_setup socket
+commom,socket sendmsg socket sendmsg,commom,commom,commom,syz_usb_control_io syz_usb_control_io,fsconfig fsconfig
+commom,socket sendmsg socket,commom,bpf bpf bpf,commom,mmap socket setsockopt,commom
+getsockname sendmsg,commom,mkdir mount,commom,commom,commom,setsockopt setsockopt setsockopt
+commom,commom,commom,connect sendmmsg,commom,commom,bind setsockopt
