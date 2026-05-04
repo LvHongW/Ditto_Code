@@ -1,3 +1,4 @@
 # 忽略指定的文件夹
 work/
 tools/
+venv/
