@@ -121,12 +121,15 @@ def extract_allocated_section(report):
         return res[:-2]
 
 
-def extrace_call_trace(report):
+def extrace_call_trace(report, kasan_funcs=None, arch='amd64'):
     regs_regx = r'[A-Z0-9]+:( )+[a-z0-9]+'
     implicit_call_regx = r'\[.+\]  \?.*'
     fs_regx = r'FS-Cache:'
     ignore_func_regx = r'__(read|write)_once'
-    call_trace_end = [r"entry_SYSENTER", r"entry_SYSCALL", r"ret_from_fork", r"bpf_prog_[a-z0-9]{16}\+", r"Allocated by"]
+    from core.interface.arch_config import get_arch_config
+    arch_config = get_arch_config(arch)
+    call_trace_end = [re.escape(e) if e in ["bpf_prog_"] else e for e in arch_config["call_trace_ends"]]
+    call_trace_end = [r"bpf_prog_[a-z0-9]{16}\+"] + [e for e in arch_config["call_trace_ends"] if e != "bpf_prog_"]
     exceptions = [" <IRQ>", " </IRQ>"]
     res = []
     record_flag = 0

@@ -4,6 +4,7 @@ import logging
 import time
 import os
 import core.interface.utilities as utilities
+from core.interface.arch_config import get_arch_config
 
 from subprocess import Popen, PIPE, STDOUT, call
 
@@ -12,7 +13,7 @@ port_error_regx = r'Could not set up host forwarding rule'
 
 class VMInstance:
 
-    def __init__(self, hash_tag, proj_path='/tmp/', log_name='vm.log', log_suffix="", logger=None, debug=False):
+    def __init__(self, hash_tag, proj_path='/tmp/', log_name='vm.log', log_suffix="", logger=None, debug=False, arch='amd64'):
         self.proj_path = proj_path
         self.port = None
         self.image = None
@@ -27,14 +28,9 @@ class VMInstance:
         self.hash_tag = hash_tag
         self.log_name = log_name
         self.output = []
-        self.def_opts = ["kasan_multi_shot=1", "earlyprintk=serial", "oops=panic", "nmi_watchdog=panic", "panic=1", \
-                        "ftrace_dump_on_oops=orig_cpu", "rodata=n", "vsyscall=native", "net.ifnames=0", \
-                        "biosdevname=0", "kvm-intel.nested=1", \
-                        "kvm-intel.unrestricted_guest=1", "kvm-intel.vmm_exclusive=1", \
-                        "kvm-intel.fasteoi=1", "kvm-intel.ept=1", "kvm-intel.flexpriority=1", \
-                        "kvm-intel.vpid=1", "kvm-intel.emulate_invalid_guest_state=1", \
-                        "kvm-intel.eptad=1", "kvm-intel.enable_shadow_vmcs=1", "kvm-intel.pml=1", \
-                        "kvm-intel.enable_apicv=1"]
+        self.arch = arch
+        self.arch_config = get_arch_config(arch)
+        self.def_opts = self.arch_config["kernel_boot_params"]
         log_name += log_suffix
         self.qemu_logger = self.init_logger(os.path.join(proj_path, log_name))
         self.case_logger = self.qemu_logger
@@ -57,24 +53,44 @@ class VMInstance:
         return logger
 
     def setup(self, port, image, linux, mem="2G", cpu="2", key=None, gdb_port=None, mon_port=None, opts=None, timeout=None):
-        cur_opts = ["root=/dev/sda", "console=ttyS0"]
+        cfg = self.arch_config
+        cur_opts = ["root={}".format(cfg["qemu_root_dev"]), "console={}".format(cfg["qemu_console"])]
         gdb_arg = ""
         self.port = port
         self.image = image
         self.linux = linux
         self.key = key
         self.timeout = timeout
-        self.cmd_launch = ["qemu-system-x86_64", "-m", mem, "-smp", cpu]
+        self.cmd_launch = [cfg["qemu_binary"], "-m", mem, "-smp", cpu]
+
+        # ARM64 needs -machine virt
+        if cfg["qemu_machine"] is not None:
+            self.cmd_launch.extend(["-machine", cfg["qemu_machine"]])
+
         if gdb_port != None:
             self.cmd_launch.extend(["-gdb", "tcp::{}".format(gdb_port)])
         if mon_port != None:
             self.cmd_launch.extend(["-monitor", "tcp::{},server,nowait,nodelay".format(mon_port)])
         if self.port != None:
-            self.cmd_launch.extend(["-net", "nic,model=e1000", "-net", "user,host=10.0.2.10,hostfwd=tcp::{}-:22".format(self.port)])
-        self.cmd_launch.extend(["-display", "none", "-serial", "stdio", "-no-reboot", "-enable-kvm", "-cpu", "host,migratable=off", 
-                    "-hda", "{}/stretch.img".format(self.image), 
-                    "-snapshot", "-kernel", "{}/arch/x86_64/boot/bzImage".format(self.linux),
-                    "-append"])
+            self.cmd_launch.extend(["-netdev", "user,id=net0,host=10.0.2.10,hostfwd=tcp::{}-:22".format(self.port)])
+            self.cmd_launch.extend(["-device", "{},netdev=net0".format(cfg["qemu_nic"])])
+
+        kvm_and_cpu_args = ["-display", "none", "-serial", "stdio", "-no-reboot"]
+        if cfg["qemu_enable_kvm"]:
+            kvm_and_cpu_args.extend(["-enable-kvm", "-cpu", cfg["qemu_cpu"]])
+        else:
+            kvm_and_cpu_args.extend(["-cpu", cfg["qemu_cpu"]])
+        self.cmd_launch.extend(kvm_and_cpu_args)
+
+        # ARM64 uses -drive instead of -hda
+        image_path = os.path.join(self.image, cfg["image_filename"])
+        if cfg["qemu_use_drive"]:
+            self.cmd_launch.extend(["-drive", "file={},format=raw".format(image_path)])
+        else:
+            self.cmd_launch.extend(["-hda", image_path])
+
+        kernel_path = os.path.join(self.linux, cfg["kernel_path"])
+        self.cmd_launch.extend(["-snapshot", "-kernel", kernel_path, "-append"])
         if opts == None:
             cur_opts.extend(self.def_opts)
         else:
@@ -152,7 +168,7 @@ class VMInstance:
                     continue
                 if utilities.regx_match(reboot_regx, line) or utilities.regx_match(port_error_regx, line):
                     self.case_logger.error("Booting qemu-{} failed".format(self.log_name))
-                if utilities.regx_match(r'Debian GNU\/Linux \d+ syzkaller ttyS\d+', line):
+                if utilities.regx_match(self.arch_config["startup_regex"], line):
                     self.qemu_ready = True
                 self.qemu_logger.info(line)
                 if self.debug:

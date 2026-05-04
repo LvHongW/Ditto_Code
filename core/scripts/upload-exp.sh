@@ -3,8 +3,8 @@
 set -ex
 echo "running upload-exp.sh"
 
-if [ $# -ne 10 ]; then
-  echo "Usage ./upload-exp.sh case_path syz_repro_url ssh_port image_path syz_commit type c_repro i386 fixed gcc_version"
+if [ $# -ne 11 ]; then
+  echo "Usage ./upload-exp.sh case_path syz_repro_url ssh_port image_path syz_commit type c_repro fixed gcc_version arch"
   exit 1
 fi
 
@@ -15,9 +15,9 @@ IMAGE_PATH=$4
 SYZKALLER=$5
 TYPE=$6
 C_REPRO=$7
-I386=$8
-FIXED=$9
-GCCVERSION=${10}
+FIXED=$8
+GCCVERSION=$9
+ARCH=${10}
 EXITCODE=3
 PROJECT_PATH=`pwd`
 BIN_PATH=$CASE_PATH/gopath/src/github.com/google/syzkaller
@@ -26,11 +26,11 @@ export GO111MODULE=auto
 export GOROOT=`pwd`/tools/goroot
 export PATH=$GOROOT/bin:$PATH
 
-M32=""
-ARCH="amd64"
-if [ "$I386" != "None" ]; then
-    M32="-m32"
-    ARCH="386"
+# Determine SSH key based on architecture
+if [ "$ARCH" = "arm64" ]; then
+    SSH_KEY="$IMAGE_PATH/arm64-trixie.img.key"
+else
+    SSH_KEY="$IMAGE_PATH/stretch.img.key"
 fi
 
 cd $CASE_PATH
@@ -47,7 +47,7 @@ else
 fi
 scp -F /dev/null -o UserKnownHostsFile=/dev/null \
     -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
-    -i $IMAGE_PATH/stretch.img.key -P $PORT ./testcase root@localhost:/root
+    -i $SSH_KEY -P $PORT ./testcase root@localhost:/root
 
 if [ "$FIXED" == "0" ]; then
     if [ ! -d "$CASE_PATH/poc/gopath" ]; then
@@ -63,6 +63,7 @@ if [ "$FIXED" == "0" ]; then
 
         git checkout -f $SYZKALLER || (git pull https://github.com/google/syzkaller.git master > /dev/null 2>&1 && git checkout -f $SYZKALLER)
         git rev-list HEAD | grep $(git rev-parse dfd609eca1871f01757d6b04b19fc273c87c14e5) || EXITCODE=2
+        # TARGETVMARCH is always amd64 (syz-execprog runs on host), TARGETARCH is VM target
         make TARGETARCH=$ARCH TARGETVMARCH=amd64 execprog executor
         if [ -d "bin/linux_$ARCH" ]; then
             cp bin/linux_amd64/syz-execprog $BIN_PATH
@@ -98,7 +99,7 @@ fi
 
 CMD="scp -F /dev/null -o UserKnownHostsFile=/dev/null \
     -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
-    -i $IMAGE_PATH/stretch.img.key -P $PORT $BIN_PATH/syz-execprog $BIN_PATH/syz-executor root@localhost:/"
+    -i $SSH_KEY -P $PORT $BIN_PATH/syz-execprog $BIN_PATH/syz-executor root@localhost:/"
 
 $CMD
 echo $CMD > upload-exp.sh

@@ -74,10 +74,21 @@ CASE_PATH=$PROJECT_PATH/work/$CATALOG/$HASH
 PATCHES_PATH=$PROJECT_PATH/$PKG_NAME/patches
 LLVM_PATCHED_PATH=$PROJECT_PATH/tools/llvm/build
 
-echo "Compiler: "$COMPILER_VERSION | grep gcc && \
-COMPILER=$PROJECT_PATH/tools/$COMPILER_VERSION/bin/gcc || \
-COMPILER=$PROJECT_PATH/tools/$COMPILER_VERSION/bin/clang
+# ARM64 uses cross-compiler instead of syzkaller-provided compilers
+if [ "$ARCH" = "arm64" ]; then
+  COMPILER=$PROJECT_PATH/tools/aarch64-gcc/bin/aarch64-linux-gnu-gcc
+  CROSS_COMPILE="aarch64-linux-gnu-"
+  MAKE_ARCH="ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE"
+else
+  echo "Compiler: "$COMPILER_VERSION | grep gcc && \
+  COMPILER=$PROJECT_PATH/tools/$COMPILER_VERSION/bin/gcc || \
+  COMPILER=$PROJECT_PATH/tools/$COMPILER_VERSION/bin/clang
+  CROSS_COMPILE=""
+  MAKE_ARCH=""
+fi
 N_CORES=$((`nproc` / $MAX_COMPILING_KERNEL))
+
+echo "[deploy.sh] ARCH=$ARCH COMPILER=$COMPILER"
 
 if [ ! -d "$save_linux_folder/$1-$INDEX" ]; then
   echo "No linux repositories detected"
@@ -127,6 +138,7 @@ if [ ! -f "$CASE_PATH/.stamp/BUILD_SYZKALLER" ]; then
   git checkout -f 9b1f3e665308ee2ddd5b3f35a078219b5c509cdb
   patch -p1 -i $PATCHES_PATH/syzkaller-9b1f3e6-ditto.patch
 
+  # TARGETVMARCH is always amd64 (syz-execprog runs on host), TARGETARCH is the VM target
   make TARGETARCH=$ARCH TARGETVMARCH=amd64
   if [ ! -d "workdir" ]; then
     mkdir workdir
@@ -142,11 +154,21 @@ if [ ! -d "$CASE_PATH/img" ]; then
   mkdir -p $CASE_PATH/img
 fi
 cd img
-if [ ! -L "$CASE_PATH/img/stretch.img" ]; then
-  ln -s $PROJECT_PATH/tools/img/$IMAGE.img ./stretch.img
-fi
-if [ ! -L "$CASE_PATH/img/stretch.img.key" ]; then
-  ln -s $PROJECT_PATH/tools/img/$IMAGE.img.key ./stretch.img.key
+# ARM64 uses different image filenames
+if [ "$ARCH" = "arm64" ]; then
+  if [ ! -L "$CASE_PATH/img/arm64-trixie.img" ]; then
+    ln -s $PROJECT_PATH/tools/img/$IMAGE.img ./arm64-trixie.img
+  fi
+  if [ ! -L "$CASE_PATH/img/arm64-trixie.img.key" ]; then
+    ln -s $PROJECT_PATH/tools/img/$IMAGE.img.key ./arm64-trixie.img.key
+  fi
+else
+  if [ ! -L "$CASE_PATH/img/stretch.img" ]; then
+    ln -s $PROJECT_PATH/tools/img/$IMAGE.img ./stretch.img
+  fi
+  if [ ! -L "$CASE_PATH/img/stretch.img.key" ]; then
+    ln -s $PROJECT_PATH/tools/img/$IMAGE.img.key ./stretch.img.key
+  fi
 fi
 cd ..
 
@@ -167,32 +189,57 @@ if [ ! -f "$CASE_PATH/.stamp/BUILD_KERNEL" ]; then
   git checkout -f $COMMIT || exit 1
   cp $CASE_PATH/basic_info/config .config
 
-  CONFIGKEYSENABLE="
-    CONFIG_HAVE_ARCH_KASAN
-    CONFIG_KASAN
-    CONFIG_KASAN_OUTLINE
-    CONFIG_DEBUG_INFO
-    CONFIG_FRAME_POINTER
-    CONFIG_UNWINDER_FRAME_POINTER
-    CONFIG_KCOV
-    CONFIG_KCOV_INSTRUMENT_ALL
-    CONFIG_KCOV_ENABLE_COMPARISONS
-    CONFIG_DEBUG_FS
-    CONFIG_DEBUG_KMEMLEAK
-    CONFIG_DEBUG_INFO
-    CONFIG_KALLSYMS
-    CONFIG_KALLSYMS_ALL"
+  if [ "$ARCH" = "arm64" ]; then
+    CONFIGKEYSENABLE="
+      CONFIG_HAVE_ARCH_KASAN
+      CONFIG_KASAN
+      CONFIG_KASAN_GENERIC
+      CONFIG_KASAN_INLINE
+      CONFIG_DEBUG_INFO
+      CONFIG_FRAME_POINTER
+      CONFIG_KCOV
+      CONFIG_KCOV_INSTRUMENT_ALL
+      CONFIG_KCOV_ENABLE_COMPARISONS
+      CONFIG_DEBUG_FS
+      CONFIG_DEBUG_KMEMLEAK
+      CONFIG_KALLSYMS
+      CONFIG_KALLSYMS_ALL
+      CONFIG_VIRTIO_BLK
+      CONFIG_VIRTIO_NET
+      CONFIG_VIRTIO_PCI"
 
-  CONFIGKEYSDISABLE="
-    CONFIG_BUG_ON_DATA_CORRUPTION
-    CONFIG_KASAN_INLINE
-    CONFIG_RANDOMIZE_BASE
-    CONFIG_PANIC_ON_OOPS
-    CONFIG_X86_SMAP
-    CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC
-    CONFIG_BOOTPARAM_HARDLOCKUP_PANIC
-    CONFIG_BOOTPARAM_HUNG_TASK_PANIC"
-  
+    CONFIGKEYSDISABLE="
+      CONFIG_BUG_ON_DATA_CORRUPTION
+      CONFIG_RANDOMIZE_BASE
+      CONFIG_PANIC_ON_OOPS"
+  else
+    CONFIGKEYSENABLE="
+      CONFIG_HAVE_ARCH_KASAN
+      CONFIG_KASAN
+      CONFIG_KASAN_OUTLINE
+      CONFIG_DEBUG_INFO
+      CONFIG_FRAME_POINTER
+      CONFIG_UNWINDER_FRAME_POINTER
+      CONFIG_KCOV
+      CONFIG_KCOV_INSTRUMENT_ALL
+      CONFIG_KCOV_ENABLE_COMPARISONS
+      CONFIG_DEBUG_FS
+      CONFIG_DEBUG_KMEMLEAK
+      CONFIG_DEBUG_INFO
+      CONFIG_KALLSYMS
+      CONFIG_KALLSYMS_ALL"
+
+    CONFIGKEYSDISABLE="
+      CONFIG_BUG_ON_DATA_CORRUPTION
+      CONFIG_KASAN_INLINE
+      CONFIG_RANDOMIZE_BASE
+      CONFIG_PANIC_ON_OOPS
+      CONFIG_X86_SMAP
+      CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC
+      CONFIG_BOOTPARAM_HARDLOCKUP_PANIC
+      CONFIG_BOOTPARAM_HUNG_TASK_PANIC"
+  fi
+
   for key in $CONFIGKEYSDISABLE;
   do
     config_disable $key
@@ -204,8 +251,8 @@ if [ ! -f "$CASE_PATH/.stamp/BUILD_KERNEL" ]; then
     config_enable $key
   done
 
-  make olddefconfig CC=$COMPILER
-  make -j$N_CORES CC=$COMPILER > make.log 2>&1 || copy_log_then_exit make.log
+  make olddefconfig $MAKE_ARCH CC=$COMPILER
+  make -j$N_CORES $MAKE_ARCH CC=$COMPILER > make.log 2>&1 || copy_log_then_exit make.log
   rm $CASE_PATH/config || echo "It's ok"
   cp .config $CASE_PATH/config
   touch $CASE_PATH/.stamp/BUILD_KERNEL

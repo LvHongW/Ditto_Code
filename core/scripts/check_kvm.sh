@@ -12,8 +12,9 @@ function add_user_to_kvm_group() {
 }
 
 if [ ! -e "/dev/kvm" ]; then
-  echo "This machine do not support KVM. ditto cannot run on it."
-  exit 1
+  echo "[WARNING] This machine does not support KVM. ARM64/TCG mode will work without KVM."
+  echo "[WARNING] x86 fuzzing with KVM will not be available."
+  exit 0
 fi
 
 groups $(whoami) | grep kvm || add_user_to_kvm_group

@@ -8,6 +8,7 @@ import json
 import pathlib
 import queue
 from core.interface.vm import VM
+from core.interface.arch_config import get_arch_config
 
 from subprocess import call, Popen, PIPE, STDOUT
 from .syzbotCrawler import Crawler
@@ -35,7 +36,7 @@ thread_fn = None
 qemu_timeout = 6
 
 class CrashChecker:
-    def __init__(self, project_path, case_path, ssh_port, logger, debug, offset, qemu_num, store_read=True, compiler="gcc-7", max_compiling_kernel=1):
+    def __init__(self, project_path, case_path, ssh_port, logger, debug, offset, qemu_num, store_read=True, compiler="gcc-7", max_compiling_kernel=1, arch='amd64'):
         os.makedirs("{}/poc".format(case_path), exist_ok=True)
         self.logger = logger
         self.project_path = project_path
@@ -54,15 +55,19 @@ class CrashChecker:
         self.max_compiling_kernel = max_compiling_kernel
         self.queue = queue.Queue()
         self.case_logger = self.__init_case_logger("{}-info".format(case_path))
+        self.arch = arch
+        self.arch_config = get_arch_config(arch)
+        # ARM64 TCG is much slower, use longer timeout
+        self.qemu_timeout = self.arch_config["qemu_boot_timeout"]
 
-    def run(self, syz_repro, syz_commit, log=None, linux_commit=None, config=None, c_repro=None, i386=None):
+    def run(self, syz_repro, syz_commit, log=None, linux_commit=None, config=None, c_repro=None, arch='amd64'):
         self.case_logger.info("=============================crash.run=============================")
         if log != None:
             exitcode = self.deploy_linux(linux_commit, config, 0)
             if exitcode == 1:
                 self.logger.info("Error occur at deploy_linux.sh")
                 return [False, None]
-        ori_crash_report, trigger = self.read_crash(syz_repro, syz_commit, log, 0, c_repro, i386)
+        ori_crash_report, trigger = self.read_crash(syz_repro, syz_commit, log, 0, c_repro, arch)
         if ori_crash_report == []:
             self.logger.info("No crash trigger by original poc")
             return [False, None]
@@ -74,7 +79,7 @@ class CrashChecker:
             if self.compare_crashes(ori_crash_report, new_crash_reports):
                 return [True, path]
         return [False, None]
-    
+
     def check_read_before_write(self, path):
         new_crash_reports = self.read_existed_crash(path)
         for each_report in new_crash_reports:
@@ -83,7 +88,7 @@ class CrashChecker:
                     return True
         return False
 
-    
+
     def diff_testcase(self, crash_path, syz_repro):
         new_testcase = []
         old_testcase = []
@@ -102,7 +107,7 @@ class CrashChecker:
                 old_testcase.append(line)
         return utilities.levenshtein("\n".join(old_testcase), "\n".join(new_testcase))
 
-    def repro_on_fixed_kernel(self, syz_commit, linux_commit=None, config=None, c_repro=None, i386=None, patch_commit=None, crashes_path=None, limitedMutation=False):
+    def repro_on_fixed_kernel(self, syz_commit, linux_commit=None, config=None, c_repro=None, patch_commit=None, crashes_path=None, limitedMutation=False, arch='amd64'):
         if crashes_path == None:
             crashes_path,crash_find_num = self.extract_existed_crash(self.case_path)
             self.case_logger.info("find crash num:{}\tcan repro num:{}".format(crash_find_num,len(crashes_path)))
@@ -123,7 +128,7 @@ class CrashChecker:
             key = os.path.basename(path)
             path_repro = os.path.join(path, "repro.prog")
             self.case_logger.info("[Crash] Go for {}".format(path_repro))
-            ori_crash_report, trigger = self.read_crash(path_repro, syz_commit, None, 0, c_repro, i386)
+            ori_crash_report, trigger = self.read_crash(path_repro, syz_commit, None, 0, c_repro, arch)
             if ori_crash_report != []:
                 if trigger:
 
@@ -147,7 +152,7 @@ class CrashChecker:
         for path in crashes_path:
             key = os.path.basename(path)
             path_repro = os.path.join(path, "repro.prog")
-            ori_crash_report, trigger = self.read_crash(path_repro, syz_commit, None, 1, c_repro, i386)
+            ori_crash_report, trigger = self.read_crash(path_repro, syz_commit, None, 1, c_repro, arch)
             if ori_crash_report != []:
                 if trigger:
                     self.logger.info("Reproduceable: {} in patch_version".format(key))
@@ -166,7 +171,7 @@ class CrashChecker:
                     self.logger.info("Fixed: {}".format(key))
                     self.case_logger.info("[Crash] Fixed: {}".format(key))
                     res.append(path)
- 
+
                 if reproduceable[key] == NONCRASH:
                     self.logger.info("Invalid crash: {} unreproduceable on both fixed and unfixed kernel".format(key))
                     self.case_logger.info("[Crash] Invalid crash: {} unreproduceable on both fixed and unfixed kernel".format(key))
@@ -193,7 +198,7 @@ class CrashChecker:
             self.__log_subprocess_output(p.stdout, logging.INFO)
         exitcode = p.wait()
         return exitcode
-    
+
     def read_kasan_funcs(self):
         res = []
         path = os.path.join(self.package_path, "criticalsys/kasan_related_funcs")
@@ -212,7 +217,7 @@ class CrashChecker:
             if len(report1) > 2:
                 for report2 in new_crash_reports:
                     if len(report2) > 2:
-                        res1 = self.__match_allocated_section(report1, report2)     
+                        res1 = self.__match_allocated_section(report1, report2)
                         res2 = self.__match_call_trace(report1, report2)
                         if ratio_allocation > res1[1]:
                             ratio_allocation = res1[1]
@@ -253,8 +258,8 @@ class CrashChecker:
                                 res.append(os.path.join(crash_path, case))
                                 continue
         return res, crash_find_num
-    
-    def read_crash(self, syz_repro, syz_commit, log, fixed, c_repro, i386):
+
+    def read_crash(self, syz_repro, syz_commit, log, fixed, c_repro, arch='amd64'):
         self.kill_qemu = False
         res = []
         trigger = False
@@ -274,7 +279,7 @@ class CrashChecker:
         else:
             self.case_logger.info("=============================crash.read_crash=============================")
             for i in range(0, self.qemu_num):
-                x = threading.Thread(target=self.trigger_ori_crash, args=(syz_repro, syz_commit, c_repro, i386, i, c_hash, repro_type, fixed, ), name="trigger_ori_crash-{}".format(i))
+                x = threading.Thread(target=self.trigger_ori_crash, args=(syz_repro, syz_commit, c_repro, arch, i, c_hash, repro_type, fixed, ), name="trigger_ori_crash-{}".format(i))
                 x.start()
                 if self.debug:
                     x.join()
@@ -295,7 +300,7 @@ class CrashChecker:
             self.logger.error(res[0])
             return [], trigger
         return res, trigger
-    
+
     def read_existed_crash(self, crash_path):
         res = []
         crash = []
@@ -341,19 +346,19 @@ class CrashChecker:
                     crash = []
                 continue
             if utilities.regx_match(kasan_mem_regx, line) or \
-                utilities.regx_match(kasan_double_free_regx, line):
+               utilities.regx_match(kasan_double_free_regx, line):
                 kasan_flag ^= 1
             if record_flag and kasan_flag:
                 crash.append(line)
         return res
-        
+
     def save_crash_log(self, log, name):
         with open("{}/poc/crash_log-{}".format(self.case_path, name), "w+") as f:
             for each in log:
                 for line in each:
                     f.write(line+"\n")
                 f.write("\n")
-    
+
     def deploy_linux(self, commit, config, fixed):
         target = os.path.join(self.package_path, "scripts/deploy_linux.sh")
         utilities.chmodX(target)
@@ -372,14 +377,14 @@ class CrashChecker:
         return exitcode
 
 
-    def trigger_ori_crash(self, syz_repro, syz_commit, c_repro, i386, th_index,c_hash,repro_type,fixed=0):
+    def trigger_ori_crash(self, syz_repro, syz_commit, c_repro, arch, th_index,c_hash,repro_type,fixed=0):
         res = []
         trgger_hunted_bug = False
-        qemu = VM(hash_tag=c_hash, linux=self.linux_path, port=self.ssh_port+th_index, image=self.image_path, proj_path="{}/poc/".format(self.case_path) ,log_name="qemu-{}.log".format(c_hash), log_suffix=str(th_index), timeout=10*qemu_timeout, debug=self.debug)
-        qemu.qemu_logger.info("QEMU-{} launched. Fixed={}\n".format(th_index, fixed))
+        qemu = VM(hash_tag=c_hash, linux=self.linux_path, port=self.ssh_port+th_index, image=self.image_path, proj_path="{}/poc/".format(self.case_path) ,log_name="qemu-{}.log".format(c_hash), log_suffix=str(th_index), timeout=10*self.qemu_timeout, debug=self.debug, arch=arch)
+        qemu.qemu_logger.info("QEMU-{} launched. arch={} Fixed={}\n".format(th_index, arch, fixed))
         p = qemu.run()
         self.case_logger.info("QEMU-{} start running...".format(th_index))
-        
+
         extract_report = False
         qemu_close = False
         out_begin = 0
@@ -395,12 +400,12 @@ class CrashChecker:
                     qemu_close = True
                 if qemu.qemu_ready and out_begin == 0:
                     self.case_logger.info("[Crash] upload_exp start")
-                    ok = self.upload_exp(syz_repro, self.ssh_port+th_index, syz_commit, repro_type, c_repro, i386, fixed, qemu.qemu_logger)
+                    ok = self.upload_exp(syz_repro, self.ssh_port+th_index, syz_commit, repro_type, c_repro, arch, fixed, qemu.qemu_logger)
                     if not ok:
                         p.kill()
                         break
                     self.case_logger.info("[Crash] upload_exp succeed")
-                    ok = self.run_exp(syz_repro, self.ssh_port+th_index, repro_type, ok, i386, th_index, qemu.qemu_logger)
+                    ok = self.run_exp(syz_repro, self.ssh_port+th_index, repro_type, ok, arch, th_index, qemu.qemu_logger)
                     if not ok:
                         p.kill()
                         break
@@ -459,11 +464,14 @@ class CrashChecker:
         self.queue.put([res, trgger_hunted_bug])
         return
 
-    def upload_exp(self, syz_repro, port, syz_commit, repro_type, c_repro, i386, fixed, logger):
+    def _ssh_key_path(self):
+        return os.path.join(self.image_path, self.arch_config["image_key_filename"])
+
+    def upload_exp(self, syz_repro, port, syz_commit, repro_type, c_repro, arch, fixed, logger):
         target = os.path.join(self.package_path, "scripts/upload-exp.sh")
         utilities.chmodX(target)
         p = Popen([target, self.case_path, syz_repro,
-            str(port), self.image_path, syz_commit, str(repro_type), str(c_repro), str(i386), str(fixed), self.compiler],
+            str(port), self.image_path, syz_commit, str(repro_type), str(c_repro), str(fixed), self.compiler, arch],
         stdout=PIPE,
         stderr=STDOUT)
         with p.stdout:
@@ -473,11 +481,11 @@ class CrashChecker:
         if exitcode != 2 and exitcode != 3:
             return 0
         return exitcode
-    
+
     def upload_custom_exp(self, path, port, logger=None):
         p = Popen(["scp", "-F", "/dev/null", "-o", "UserKnownHostsFile=/dev/null", \
             "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", \
-            "-i", "{}/stretch.img.key".format(self.image_path), "-P", str(port), path, "root@localhost:/root/poc"],
+            "-i", self._ssh_key_path(), "-P", str(port), path, "root@localhost:/root/poc"],
         stdout=PIPE,
         stderr=STDOUT)
         with p.stdout:
@@ -485,13 +493,13 @@ class CrashChecker:
                 log_anything(p.stdout, logger, self.debug)
         exitcode = p.wait()
         return exitcode
-    
-    def run_exp(self, syz_repro, port, repro_type, exitcode, i386, th_index, logger=None):
+
+    def run_exp(self, syz_repro, port, repro_type, exitcode, arch, th_index, logger=None):
         if repro_type == utilities.URL:
             with open(os.path.join(self.basic_info_folder,'syz_repro'), 'r') as f:
                 syz_repro = f.read()
             text = syz_repro.split('\n')
-            command = self.make_commands(text, exitcode, i386)
+            command = self.make_commands(text, exitcode, arch)
         else:
             with open(syz_repro, "r") as f:
                 text = f.readlines()
@@ -502,11 +510,11 @@ class CrashChecker:
                 with open(command_path, 'r') as f:
                     command = f.readline().strip('\n')
             else:"""
-            command = self.make_commands(text, exitcode, i386)
+            command = self.make_commands(text, exitcode, arch)
         target = os.path.join(self.package_path, "scripts/run-script.sh")
         utilities.chmodX(target)
 
-        p1 = Popen([target, command, str(port), self.image_path, self.case_path],
+        p1 = Popen([target, command, str(port), self.image_path, self.case_path, arch],
         stdout=PIPE,
         stderr=STDOUT)
 
@@ -518,9 +526,9 @@ class CrashChecker:
             self.case_logger.error("QEMU threaded {}: Usually, there is no reproducer in the crash".format(th_index))
             return 0
 
-        p2 = Popen(["ssh", "-F", "/dev/null", "-o", "UserKnownHostsFile=/dev/null", 
-        "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", 
-        "-i", "{}/stretch.img.key".format(self.image_path), 
+        p2 = Popen(["ssh", "-F", "/dev/null", "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
+        "-i", self._ssh_key_path(),
         "-p", str(port), "root@localhost", "chmod +x run.sh && ./run.sh "+str(th_index & 1)],
         stdout=PIPE,
         stderr=STDOUT)
@@ -528,18 +536,12 @@ class CrashChecker:
             if logger != None:
                 x = threading.Thread(target=log_anything, args=(p2.stdout, logger, self.debug), name="{} run.sh logger".format(th_index))
                 x.start()
-        """
-        call(["ssh", "-F", "/dev/null", "-o", "UserKnownHostsFile=/dev/null", 
-        "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", 
-        "-i", "{}/stretch.img.key".format(self.image_path), 
-        "-p", str(port), "root@localhost", "chmod +x run.sh && ./run.sh "+str(th_index & 1)])
-        """
         return 1
-    
+
     def run_custom_exp(self, port, logger=None):
-        p2 = Popen(["ssh", "-F", "/dev/null", "-o", "UserKnownHostsFile=/dev/null", 
-        "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", 
-        "-i", "{}/stretch.img.key".format(self.image_path), 
+        p2 = Popen(["ssh", "-F", "/dev/null", "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
+        "-i", self._ssh_key_path(),
         "-p", str(port), "root@localhost", "./poc"],
         stdout=PIPE,
         stderr=STDOUT)
@@ -548,14 +550,15 @@ class CrashChecker:
                 x = threading.Thread(target=log_anything, args=(p2.stdout, logger, self.debug), name="{} run.sh logger")
                 x.start()
 
-    def make_commands(self, text, support_enable_features, i386):
+    def make_commands(self, text, support_enable_features, arch='amd64'):
         command = "/syz-execprog -executor=/syz-executor "
         if text[0][:len(command)] == command:
 
             return text[0]
         enabled = "-enable="
 
-        normal_pm = {"arch":"amd64", "threaded":"false", "collide":"false", "sandbox":"none"}
+        arch_config = get_arch_config(arch)
+        normal_pm = {"arch": arch_config["syz_targetarch"], "threaded":"false", "collide":"false", "sandbox":"none"}
         for line in text:
 
             if line.find('{') != -1 and line.find('}') != -1:
@@ -570,10 +573,7 @@ class CrashChecker:
                     if each in pm and pm[each] != "":
                         command += "-" + each + "=" +str(pm[each]).lower() + " "
                     else:
-                        if each=='arch' and i386:
-                            command += "-" + each + "=386" + " "
-                        else:
-                            command += "-" + each + "=" +str(normal_pm[each]).lower() + " "
+                        command += "-" + each + "=" +str(normal_pm[each]).lower() + " "
                 if "procs" in pm and str(pm["procs"]) != "1":
                     num = int(pm["procs"])
                     command += "-procs=" + str(num*2) + " "
@@ -615,15 +615,15 @@ class CrashChecker:
                     if "vhci" in pm and str(pm["vhci"]).lower() == "true":
                         enabled += "vhci,"
                     if "wifi" in pm and str(pm["wifi"]).lower() == "true":
-                        enabled += "wifi," 
-                
+                        enabled += "wifi,"
+
                 if enabled[-1] == ',':
                     command += enabled[:-1] + " testcase"
                 else:
                     command += "testcase"
                 break
         return command
-    
+
     def monitor_execution(self, p):
         count = 0
         while (count <60):
@@ -638,7 +638,7 @@ class CrashChecker:
                 return
         self.case_logger.info('[Crash] Time out, kill qemu')
         p.kill()
-            
+
     def __match_allocated_section(self, report1 ,report2):
         self.case_logger.info("[Crash] match allocated section")
         ratio = 1
@@ -668,12 +668,12 @@ class CrashChecker:
         if ratio > 0.3:
             return [False, ratio]
         return [True, ratio]
-    
+
     def __match_call_trace(self, report1, report2):
         self.case_logger.info("[Crash] match call trace")
         ratio = 1
-        trace1 = utilities.extrace_call_trace(report1, self.kasan_func_list)
-        trace2 = utilities.extrace_call_trace(report2, self.kasan_func_list)
+        trace1 = utilities.extrace_call_trace(report1, self.kasan_func_list, arch=self.arch)
+        trace2 = utilities.extrace_call_trace(report2, self.kasan_func_list, arch=self.arch)
         seq1 = [utilities.extract_func_name(x) for x in trace1 if utilities.extract_func_name(x) != None]
         seq2 = [utilities.extract_func_name(x) for x in trace2 if utilities.extract_func_name(x) != None]
         counter = 0
@@ -698,7 +698,7 @@ class CrashChecker:
         if ratio > 0.3:
             return [False, ratio]
         return [True, ratio]
-    
+
     def __init_case_logger(self, logger_name):
         handler = logging.FileHandler("{}/poc/log".format(self.case_path))
         format = logging.Formatter('%(asctime)s %(message)s')
@@ -710,7 +710,7 @@ class CrashChecker:
         if self.debug:
             logger.propagate = True
         return logger
-    
+
     def __log_subprocess_output(self, pipe, log_level):
         for line in iter(pipe.readline, b''):
             line = line.decode("utf-8").strip('\n').strip('\r')
@@ -780,7 +780,7 @@ def reproduce_with_ori_poc(index):
             index = int(args.linux)
         link_correct_linux_repro(case_path, index)
 
-        
+
         logger = logging.getLogger("thread-{}".format(index))
         handler = logging.StreamHandler(sys.stdout)
         logger.setLevel(logging.INFO)
@@ -794,18 +794,18 @@ def reproduce_with_ori_poc(index):
         commit = case["commit"]
         config = case["config"]
         c_repro = case["c_repro"]
-        i386 = None
-        if utilities.regx_match(r'386', case["manager"]):
-            i386 = True
+        arch = 'amd64'
+        from core.interface.arch_config import detect_arch
+        arch = detect_arch(case.get("manager", ""))
         log = case["log"]
         logger.info("Running case: {}".format(hash))
         offset = index
         gcc = utilities.set_gcc_version(time_parser.parse(case["time"]))
-        checker = CrashChecker(project_path, case_path, default_port, logger, args.debug, offset, 4, gcc=gcc)
+        checker = CrashChecker(project_path, case_path, default_port, logger, args.debug, offset, 4, gcc=gcc, arch=arch)
         if checker.deploy_linux(commit,config,0) == 1:
             print("Thread {}: running case {}: Error occur in deploy_linux.sh".format(index, hash[:7]))
             continue
-        report, trigger = checker.read_crash(case["syz_repro"], case["syzkaller"], None, 0, case["c_repro"], i386)
+        report, trigger = checker.read_crash(case["syz_repro"], case["syzkaller"], None, 0, case["c_repro"], arch)
         if report != [] and trigger:
             for each in report:
                 for line in each:
@@ -844,7 +844,7 @@ def reproduce_one_case(index):
             index = int(args.linux)
         link_correct_linux_repro(case_path, index)
 
-       
+
 
         logger = logging.getLogger("case-{}".format(hash))
         handler = logging.StreamHandler(sys.stdout)
@@ -862,20 +862,20 @@ def reproduce_one_case(index):
         commit = case["commit"]
         config = case["config"]
         c_repro = case["c_repro"]
-        i386 = None
-        if utilities.regx_match(r'386', case["manager"]):
-            i386 = True
+        arch = 'amd64'
+        from core.interface.arch_config import detect_arch
+        arch = detect_arch(case.get("manager", ""))
         log = case["log"]
         logger.info("Running case: {}".format(hash))
         offset = index
         gcc = utilities.set_gcc_version(time_parser.parse(case["time"]))
-        checker = CrashChecker(project_path, case_path, default_port, logger, args.debug, offset, 4, gcc=gcc)
+        checker = CrashChecker(project_path, case_path, default_port, logger, args.debug, offset, 4, gcc=gcc, arch=arch)
         checker.case_logger.info("=============================A reproducing process starts=============================")
         if args.identify_by_trace:
             if args.reproduce:
-                res = checker.run(syz_repro, syz_commit, None, commit, config, c_repro, i386)
+                res = checker.run(syz_repro, syz_commit, None, commit, config, c_repro, arch=arch)
             else:
-                res = checker.run(syz_repro, syz_commit, log, commit, config, c_repro, i386)
+                res = checker.run(syz_repro, syz_commit, log, commit, config, c_repro, arch=arch)
             checker.logger.info("{}:{}".format(hash, res[0]))
             if res[0]:
                 n = checker.diff_testcase(res[1], syz_repro)
@@ -884,7 +884,7 @@ def reproduce_one_case(index):
         if args.identify_by_patch:
             commit = utilities.get_patch_commit(hash)
             if commit != None:
-                checker.repro_on_fixed_kernel(syz_commit, case["commit"], config, c_repro, i386, commit)
+                checker.repro_on_fixed_kernel(syz_commit, case["commit"], config, c_repro, arch=arch, patch_commit=commit)
 
     print("Thread {} exit->".format(index))
 
@@ -911,7 +911,7 @@ def args_parse():
     parser.add_argument('-p', '--port', nargs='?',
                         default='3777',
                         help='The default port that is used by reproducing\n'
-                        '(default value is 3777)')
+                            '(default value is 3777)')
     parser.add_argument('--identify-by-trace', '-ibt', action='store_true',
                         help='Reproduce on fixed kernel')
     parser.add_argument('--store-read', action='store_true',
@@ -956,7 +956,7 @@ if __name__ == '__main__':
         for url in utilities.urlsOfCases(path, type):
             if url not in ignore:
                 crawler.run_one_case(url)
-    
+
     project_path = os.getcwd()
     lock = threading.Lock()
     l = list(crawler.cases.keys())
@@ -970,4 +970,3 @@ if __name__ == '__main__':
     for i in range(min(len(crawler.cases), parallel_max)):
         x = threading.Thread(target=thread_fn, args=(i,))
         x.start()
-        

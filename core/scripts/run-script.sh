@@ -2,8 +2,8 @@
 
 echo "running run-script.sh"
 
-if [ $# -ne 4 ]; then
-    echo "Usage ./run-script.sh command ssh_port image_path case_path"
+if [ $# -ne 5 ]; then
+    echo "Usage ./run-script.sh command ssh_port image_path case_path arch"
     exit 1
 fi
 
@@ -11,6 +11,15 @@ COMMAND=$1
 PORT=$2
 IMAGE_PATH=$3
 CASE_PATH=$4
+ARCH=$5
+
+# Determine SSH key based on architecture
+if [ "$ARCH" = "arm64" ]; then
+    SSH_KEY="$IMAGE_PATH/arm64-trixie.img.key"
+else
+    SSH_KEY="$IMAGE_PATH/stretch.img.key"
+fi
+
 RAW_COMMAND=`echo $COMMAND | sed -E "s/ -enable=[a-z_]+(,[a-z_]+)*//g"`
 NON_REPEAT_COMMAND=`echo $COMMAND | sed -E "s/ -repeat=0/ -repeat=1/g; s/ -procs=[0-9]+/ -procs=1/g"`
 NON_REPEAT_RAW_COMMAND=`echo $RAW_COMMAND | sed -E "s/ -repeat=0/ -repeat=1/g; s/ -procs=[0-9]+/ -procs=1/g"`
@@ -39,14 +48,14 @@ do
         ${NON_REPEAT_COMMAND} || ${NON_REPEAT_RAW_COMMAND}
         ${COMMAND} || ${RAW_COMMAND}
     fi
-    
+
     #Sometimes the testcase is not required to repeat, but we still give a shot
     sleep 5
 done
 EOF
 CMD="scp -F /dev/null -o UserKnownHostsFile=/dev/null \
     -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
-    -i $IMAGE_PATH/stretch.img.key -P $PORT ./run.sh root@localhost:/root"
+    -i $SSH_KEY -P $PORT ./run.sh root@localhost:/root"
 $CMD
 echo $CMD > run-script.sh
 exit 0

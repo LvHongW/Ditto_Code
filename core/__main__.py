@@ -159,7 +159,8 @@ def check_kvm():
     os.chmod(check_kvm_path, st.st_mode | stat.S_IEXEC)
     r = call([check_kvm_path], shell=False)
     if r == 1:
-        exit(0)
+        print("[WARNING] KVM not available. ARM64/TCG mode will work. x86 fuzzing may not work.")
+        return
 
 
 def cache_cases(cases):

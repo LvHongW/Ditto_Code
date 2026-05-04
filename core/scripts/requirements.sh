@@ -1,7 +1,7 @@
 #!/bin/bash
 
 if [ ! -f "$(pwd)/tools/.stamp/ENV_SETUP" ]; then
-  sudo apt-get -y install gdb curl git wget qemu-system-x86 debootstrap flex bison libssl-dev libelf-dev locales cmake libxml2-dev libz3-dev bc libncurses5 gcc-multilib g++-multilib dwarves
+  sudo apt-get -y install gdb curl git wget qemu-system-x86 qemu-system-arm debootstrap flex bison libssl-dev libelf-dev locales cmake libxml2-dev libz3-dev bc libncurses5 gcc-multilib g++-multilib dwarves qemu-user-static gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 fi
 
 if [ ! -d "work/completed" ]; then
@@ -33,8 +33,26 @@ if [ ! -f "$TOOLS_PATH/.stamp/BUILD_IMAGE" ]; then
     wget https://storage.googleapis.com/syzkaller/wheezy.img > /dev/null
     wget https://storage.googleapis.com/syzkaller/wheezy.img.key > /dev/null
     chmod 400 wheezy.img.key
-    touch $TOOLS_PATH/.stamp/BUILD_IMAGE
   fi
+  # ARM64 image: build using syzkaller's create-image.sh
+  if [ ! -f "arm64-trixie.img" ]; then
+    echo "[+] Building ARM64 image (this may take a while...)"
+    SYZ_IMG_DIR=$(mktemp -d)
+    cp $TOOLS_PATH/gopath/src/github.com/google/syzkaller/tools/create-image.sh $SYZ_IMG_DIR/
+    cd $SYZ_IMG_DIR
+    bash create-image.sh -a arm64 || echo "[WARNING] ARM64 image build failed, ARM64 cases will not work"
+    if [ -f "trixie.img" ]; then
+      mv trixie.img $TOOLS_PATH/img/arm64-trixie.img
+      mv trixie.id_rsa $TOOLS_PATH/img/arm64-trixie.img.key
+      chmod 400 $TOOLS_PATH/img/arm64-trixie.img.key
+      echo "[+] ARM64 image built successfully"
+    else
+      echo "[WARNING] ARM64 image not created"
+    fi
+    rm -rf $SYZ_IMG_DIR
+    cd $TOOLS_PATH/img
+  fi
+  touch $TOOLS_PATH/.stamp/BUILD_IMAGE
   cd ..
 fi
 
@@ -91,6 +109,23 @@ if [ ! -f "$TOOLS_PATH/.stamp/BUILD_GCC_CLANG" ]; then
   rm clang-11-prerelease-ca2dcbd030e.tar.xz
 
   touch $TOOLS_PATH/.stamp/BUILD_GCC_CLANG
+fi
+
+echo "[+] Setup ARM64 cross-compiler"
+if [ ! -f "$TOOLS_PATH/.stamp/SETUP_AARCH64_GCC" ]; then
+  # Use system-installed cross-compiler, create a symlink for uniform access
+  if [ ! -d "$TOOLS_PATH/aarch64-gcc" ]; then
+    mkdir -p $TOOLS_PATH/aarch64-gcc/bin
+  fi
+  # Create symlinks to system cross-compiler
+  if [ -f "/usr/bin/aarch64-linux-gnu-gcc" ]; then
+    ln -sf /usr/bin/aarch64-linux-gnu-gcc $TOOLS_PATH/aarch64-gcc/bin/aarch64-linux-gnu-gcc
+    ln -sf /usr/bin/aarch64-linux-gnu-g++ $TOOLS_PATH/aarch64-gcc/bin/aarch64-linux-gnu-g++
+    echo "[+] ARM64 cross-compiler linked from system"
+  else
+    echo "[WARNING] aarch64-linux-gnu-gcc not found, install gcc-aarch64-linux-gnu"
+  fi
+  touch $TOOLS_PATH/.stamp/SETUP_AARCH64_GCC
 fi
 
 echo "[+] Download pwndbg"

@@ -14,44 +14,45 @@ from subprocess import call, run, Popen, PIPE, STDOUT
 from core.interface.utilities import URL, chmodX
 from dateutil import parser as time_parser
 from .worker import Workers
+from core.interface.arch_config import detect_arch, get_arch_config
 
 syz_config_template="""
-{{ 
-        "target": "linux/amd64/{8}",
-        "http": "0.0.0.0:{5}",
-        "workdir": "{0}/workdir",
-        "kernel_obj": "{1}",
-        "image": "{2}/stretch.img",
-        "sshkey": "{2}/stretch.img.key",
-        "syzkaller": "{0}",
+{{
+        "target": "{syz_target}",
+        "http": "0.0.0.0:{ssh_port}",
+        "workdir": "{syzkaller_path}/workdir",
+        "kernel_obj": "{kernel_path}",
+        "image": "{image_path}",
+        "sshkey": "{sshkey_path}",
+        "syzkaller": "{syzkaller_path}",
         "procs": 8,
-        "mutatetime": {12},
-        "calltracesim": {17},
-        "reprosim": {18},
+        "mutatetime": {mutate_time},
+        "calltracesim": {calltracesim},
+        "reprosim": {reprosim},
         "type": "qemu",
-        "testcase": "{0}/workdir/testcase-{4}",
-        "analyzer_dir": "{6}",
-        "time_limit": "{7}",
-        "store_read": {10},
-        "grebe_struct": {11},
-        "calltrace_path": {14},
+        "testcase": "{syzkaller_path}/workdir/testcase-{hash_val}",
+        "analyzer_dir": "{current_case_path}",
+        "time_limit": "{time_limit}",
+        "store_read": {store_read},
+        "grebe_struct": {grebe_struct},
+        "calltrace_path": {calltrace_path},
         "critical_sys": [
-            {15}
+            {en_critical_syscalls}
         ],
         "critical_sys_seq": [
-            {16}
+            {en_critical_sys_seqs}
         ],
         "vm": {{
-                "count": {9},
-                "kernel": "{1}/arch/x86/boot/bzImage",
+                "count": {max_qemu},
+                "kernel": "{kernel_img_path}",
                 "cpu": 2,
                 "mem": 2048
         }},
         "enable_syscalls": [
-            {3}
+            {enable_syscalls}
         ],
         "email_addrs": [
-            {13}
+            {email_addrs}
         ]
 }}"""
 
@@ -67,8 +68,8 @@ class Deployer(Workers):
         self.mutate_time = mutate_time
         self.mutate_type = mutate_type
         self.calltracesim = calltrace_sim
-        self.reprosim = repro_sim
-        
+        self.reprosim = reprosim
+
     def init_replay_crash(self, hash_val):
         chmodX("core/scripts/init-replay.sh")
         self.logger.info("run: scripts/init-replay.sh {} {}".format(self.catalog, hash_val))
@@ -82,10 +83,11 @@ class Deployer(Workers):
         self.image_path = "{}/img".format(self.current_case_path)
         self.syzkaller_path = "{}/gopath/src/github.com/google/syzkaller".format(self.current_case_path)
         self.kernel_path = "{}/linux".format(self.current_case_path)
-        self.arch = "amd64"
-        if utilities.regx_match(r'386', case["manager"]):
-            self.arch = "386"
-        self.logger.info(hash_val)
+
+        # Architecture detection from syzbot manager field
+        self.arch = detect_arch(case.get("manager", ""))
+        self.arch_config = get_arch_config(self.arch)
+        self.logger.info("[arch] Detected architecture: {} from manager: '{}'".format(self.arch, case.get("manager", "")))
 
         if self.replay:
             self.init_replay_crash(hash_val[:7])
@@ -126,14 +128,14 @@ class Deployer(Workers):
                     f.write(r.text)
                 f.close()
                 report = "".join(r.text)
-                trace = self.get_cg(report)
+                trace = self.get_cg(report, arch=self.arch)
                 open(os.path.join(self.basic_info_folder,"report_cg"), "w").write(trace)
 
             self.create_finished_case_basic_info_save_stamp()
 
         if self.basicinfo:
             return self.index
-        
+
         self.calltrace_path = "\"{}\"".format(os.path.join(self.basic_info_folder,"report_cg"))
 
         with open(os.path.join(self.basic_info_folder,'config'), 'r') as f:
@@ -156,10 +158,6 @@ class Deployer(Workers):
         self.case_info_logger.info(url)
         self.case_info_logger.info("pid: {}".format(os.getpid()))
 
-        i386 = None
-        if utilities.regx_match(r'386', case["manager"]):
-            i386 = True
-        
         self.init_crash_checker(self.ssh_port)
 
         need_patch = 0
@@ -178,10 +176,10 @@ class Deployer(Workers):
         with open(os.path.join(self.basic_info_folder,'syz_repro'), 'r') as f:
             req = f.read()
         self.__write_config(req, hash_val[:7], critical_syscall_dict)
-        
+
         if self.kernel_fuzzing:
             if not self.reproduced_ori_poc(hash_val, 'incomplete'):
-                trigger_without_mutating, title = self.do_reproducing_ori_poc(case, hash_val, i386)
+                trigger_without_mutating, title = self.do_reproducing_ori_poc(case, hash_val, self.arch)
 
             if not self.finished_fuzzing(hash_val, 'incomplete'):
                 MaintainPoC = True
@@ -196,20 +194,20 @@ class Deployer(Workers):
                     self.__move_to_error()
                     self.create_bad_fuzzing_stamp()
                     exit(0)
-                    
+
                 self.__copy_crashes()
                 self.create_finished_fuzzing_stamp()
 
             else:
                 self.logger.info("{} has finished fuzzing".format(hash_val[:7]))
-                
+
         elif self.reproduce_ori_bug:
             if not self.reproduced_ori_poc(hash_val, 'incomplete'):
-                trigger_without_mutating, title = self.do_reproducing_ori_poc(case, hash_val, i386)
+                trigger_without_mutating, title = self.do_reproducing_ori_poc(case, hash_val, self.arch)
                 self.logger.info("Reproduce: {}:{}".format(trigger_without_mutating, title))
             else:
                 self.logger.info("{} has finished reproduce".format(hash_val[:7]))
-                
+
         self.__move_to_analyzing()
         return self.index
 
@@ -225,9 +223,9 @@ class Deployer(Workers):
 
         for _ in range(0, 3):
             if self.logger.level == logging.DEBUG:
-                p = Popen([syzkaller, 
-                            "--config={}/workdir/{}-poc.cfg".format(self.syzkaller_path, hash_val[:7]), 
-                            "-debug", 
+                p = Popen([syzkaller,
+                            "--config={}/workdir/{}-poc.cfg".format(self.syzkaller_path, hash_val[:7]),
+                            "-debug",
                             "-poc",
                             ],
                     stdout=PIPE,
@@ -237,8 +235,8 @@ class Deployer(Workers):
                     self.__log_subprocess_output(p.stdout, logging.INFO)
                 exitcode = p.wait()
                 if not MaintainPoC:
-                    p = Popen([syzkaller, 
-                                   "--config={}/workdir/{}.cfg".format(self.syzkaller_path, hash_val[:7]), 
+                    p = Popen([syzkaller,
+                                   "--config={}/workdir/{}.cfg".format(self.syzkaller_path, hash_val[:7]),
                                    "-debug",
                                    ],
                             stdout=PIPE,
@@ -248,8 +246,8 @@ class Deployer(Workers):
                         self.__log_subprocess_output(p.stdout, logging.INFO)
                     exitcode = p.wait()
             else:
-                p = Popen([syzkaller, 
-                            "--config={}/workdir/{}-poc.cfg".format(self.syzkaller_path, hash_val[:7]), 
+                p = Popen([syzkaller,
+                            "--config={}/workdir/{}-poc.cfg".format(self.syzkaller_path, hash_val[:7]),
                             "-poc",
                             ],
                     stdout=PIPE,
@@ -259,7 +257,7 @@ class Deployer(Workers):
                     self.__log_subprocess_output(p.stdout, logging.INFO)
                 exitcode = p.wait()
                 if not MaintainPoC:
-                    p = Popen([syzkaller, 
+                    p = Popen([syzkaller,
                                    "--config={}/workdir/{}.cfg".format(self.syzkaller_path, hash_val[:7]),
                                    ],
                             stdout=PIPE,
@@ -275,7 +273,7 @@ class Deployer(Workers):
             if self.correctTemplate() and self.compileTemplate():
                 exitcode = self.run_syzkaller(hash_val,MaintainPoC)
         return exitcode
-    
+
     def compileTemplate(self):
         target = os.path.join(self.package_path, "scripts/syz-compile.sh")
         chmodX(target)
@@ -289,7 +287,7 @@ class Deployer(Workers):
         exitcode = p.wait()
         self.logger.info("script/syz-compile.sh is done with exitcode {}".format(exitcode))
         return exitcode == 0
-    
+
     def correctTemplate(self):
         find_it = False
         pattern_type = utilities.SYSCALL
@@ -304,7 +302,7 @@ class Deployer(Workers):
                 return find_it
         except:
             return find_it
-        
+
         if text.find('syscall:') != -1:
             pattern = text.split(':')[1]
             pattern_type = utilities.SYSCALL
@@ -317,7 +315,7 @@ class Deployer(Workers):
                 pattern = "type " + pattern[:i]
             else:
                 pattern = pattern + " {"
-        
+
         search_path="sys/linux"
         extension=".txt"
         ori_syzkaller_path = os.path.join(self.current_case_path, "poc/gopath/src/github.com/google/syzkaller")
@@ -367,7 +365,7 @@ class Deployer(Workers):
                 if find_it:
                     target_file = file_name
                     break
-        
+
         if not os.path.isdir(dst):
             self.logger.info("{} do not exist".format(dst))
             return False
@@ -386,12 +384,12 @@ class Deployer(Workers):
                         start = i
                         find_it = True
                         continue
-                    
+
                     if find_it:
                         end = i
                         if pattern_type == utilities.SYSCALL or (pattern_type == utilities.STRUCT and line == "\n"):
                             break
-            
+
                 if find_it:
                     f = open(os.path.join(dst, file_name), "w")
                     new_data = []
@@ -440,11 +438,11 @@ class Deployer(Workers):
 
     def extractStruct(self, text):
         trivial_type = ["int8", "int16", "int32", "int64", "int16be", "int32be", "int64be", "intptr",
-                        "in", "out", "inout", "dec", "hex", "oct", "fmt", "string", "target", 
+                        "in", "out", "inout", "dec", "hex", "oct", "fmt", "string", "target",
                         "x86_real", "x86_16", "x86_32", "x86_64", "arm64", "text", "proc", "ptr", "ptr64",
                         "inet", "pseudo", "csum", "vma", "vma64", "flags", "const", "array", "void"
                         "len", "bytesize", "bytesize2", "bytesize4", "bytesize8", "bitsize", "offsetof"]
-    
+
     def __run_linux_clone_script(self,hash_val):
         chmodX("core/scripts/linux-clone.sh")
         index = str(self.index)
@@ -464,10 +462,13 @@ class Deployer(Workers):
             image = "stretch"
         else:
             image = "wheezy"
+        # ARM64 uses its own image naming
+        if self.arch == "arm64":
+            image = "arm64-trixie"
         target = os.path.join(self.package_path, "scripts/deploy.sh")
         chmodX(target)
         index = str(self.index)
-        self.logger.info("run: scripts/deploy.sh")
+        self.logger.info("run: scripts/deploy.sh arch={}".format(self.arch))
         p = Popen([target, self.linux_folder, hash_val, commit, syzkaller, config, testcase, self.hash_val[:7], self.catalog, image, self.arch, self.compiler, str(self.max_compiling_kernel), self.save_linux_folder],
                 stdout=PIPE,
                 stderr=STDOUT
@@ -477,7 +478,7 @@ class Deployer(Workers):
         exitcode = p.wait()
         self.logger.info("script/deploy.sh is done with exitcode {}".format(exitcode))
         return exitcode
-    
+
     def __write_config(self, testcase, hash_val, critical_syscall_dict):
         dependent_syscalls = []
         critical_syscalls = []
@@ -493,48 +494,59 @@ class Deployer(Workers):
             if critical_syscall_dict:
                 critical_syscalls.extend(self.__extract_critical_syscalls(each, critical_syscall_dict, bugtypes))
                 critical_sys_seqs.extend(self.__extract_critical_sys_seqs(each, critical_syscall_dict, bugtypes))
-        
+
         if len(dependent_syscalls) < 1:
             self.logger.info("Cannot find dependent syscalls for\n{}\nTry to continue without them".format(testcase))
         if len(critical_syscalls) < 1:
             self.logger.info("Cannot find critical syscalls for\n{}\nTry to continue without them".format(testcase))
-        
+
         new_syscalls = syscalls.copy()
         new_syscalls.extend(dependent_syscalls)
         new_syscalls.extend(critical_syscalls)
         new_syscalls = utilities.unique(new_syscalls)
         enable_syscalls = "\"" + "\",\n\t\"".join(new_syscalls) + "\""
-        
+
         critical_syscalls = utilities.unique(critical_syscalls)
         en_critical_syscalls = "\"" + "\",\n\t\"".join(critical_syscalls) + "\""
-        
+
         critical_sys_seqs = utilities.unique(critical_sys_seqs)
         en_critical_sys_seqs = "\"" + "\",\n\t\"".join(critical_sys_seqs) + "\""
-        
+
         email_addrs_list = [" "]
         email_addrs = "\"" + "\",\n\t\"".join(email_addrs_list) + "\""
-    
+
         syzkaller_path = self.syzkaller_path
         self.grebe_struct = "\" \""
-        syz_config = syz_config_template.format(syzkaller_path, 
-                                                self.kernel_path, 
-                                                self.image_path, 
-                                                enable_syscalls, 
-                                                hash_val, 
-                                                self.ssh_port, 
-                                                self.current_case_path, 
-                                                self.time_limit, 
-                                                self.arch, 
-                                                self.max_qemu_for_one_case, 
-                                                str(self.store_read).lower(),
-                                                self.grebe_struct,
-                                                self.mutate_time,
-                                                email_addrs,
-                                                self.calltrace_path,
-                                                en_critical_syscalls,
-                                                en_critical_sys_seqs,
-                                                self.calltracesim,
-                                                self.reprosim)
+        cfg = self.arch_config
+        image_file_path = os.path.join(self.image_path, cfg["image_filename"])
+        sshkey_file_path = os.path.join(self.image_path, cfg["image_key_filename"])
+        kernel_img_file_path = os.path.join(self.kernel_path, cfg["kernel_path"])
+
+        config_params = dict(
+            syzkaller_path=syzkaller_path,
+            kernel_path=self.kernel_path,
+            image_path=image_file_path,
+            sshkey_path=sshkey_file_path,
+            kernel_img_path=kernel_img_file_path,
+            enable_syscalls=enable_syscalls,
+            hash_val=hash_val,
+            ssh_port=self.ssh_port,
+            current_case_path=self.current_case_path,
+            time_limit=self.time_limit,
+            syz_target=cfg["syz_target"],
+            max_qemu=self.max_qemu_for_one_case,
+            store_read=str(self.store_read).lower(),
+            grebe_struct=self.grebe_struct,
+            mutate_time=self.mutate_time,
+            email_addrs=email_addrs,
+            calltrace_path=self.calltrace_path,
+            en_critical_syscalls=en_critical_syscalls,
+            en_critical_sys_seqs=en_critical_sys_seqs,
+            calltracesim=self.calltracesim,
+            reprosim=self.reprosim,
+        )
+
+        syz_config = syz_config_template.format(**config_params)
         f = open(os.path.join(syzkaller_path, "workdir/{}-poc.cfg".format(hash_val)), "w")
         f.writelines(syz_config)
         f.close()
@@ -550,25 +562,9 @@ class Deployer(Workers):
         new_syscalls = utilities.unique(new_syscalls)
         enable_syscalls = "\"" + "\",\n\t\"".join(new_syscalls) + "\""
 
-        syz_config = syz_config_template.format(syzkaller_path, 
-                                                self.kernel_path, 
-                                                self.image_path, 
-                                                enable_syscalls, 
-                                                hash_val, 
-                                                self.ssh_port, 
-                                                self.current_case_path, 
-                                                self.time_limit, 
-                                                self.arch, 
-                                                self.max_qemu_for_one_case, 
-                                                str(self.store_read).lower(),
-                                                self.grebe_struct,
-                                                self.mutate_time,
-                                                email_addrs,
-                                                self.calltrace_path,
-                                                en_critical_syscalls,
-                                                en_critical_sys_seqs,
-                                                self.calltracesim,
-                                                self.reprosim)
+        config_params["enable_syscalls"] = enable_syscalls
+
+        syz_config = syz_config_template.format(**config_params)
         f = open(os.path.join(syzkaller_path, "workdir/{}.cfg".format(hash_val)), "w")
         f.writelines(syz_config)
         f.close()
@@ -586,8 +582,8 @@ class Deployer(Workers):
                 return res
             syscall = m.groups()[0]
             res.append(syscall)
-        
-        res_add_key_syscall = res.copy()     
+
+        res_add_key_syscall = res.copy()
         return res_add_key_syscall
 
     def __extract_dependent_syscalls(self, syscall, syzkaller_path, search_path="sys/linux", extension=".txt"):
@@ -642,7 +638,7 @@ class Deployer(Workers):
                         if upper_bound and lower_bound:
                             return res
         return res
-    
+
     def __extract_critical_syscalls(self, syscall, critical_syscall_dict, bugtypes):
         res = []
         syscode = syscall.split('$')[0]
@@ -674,7 +670,7 @@ class Deployer(Workers):
                     res.append(critical_sys_seq)
                     break
         return res
-    
+
     def __extract_all_syscalls(self, last_syscall, syzkaller_path, search_path="sys/linux", extension=".txt"):
         res = []
         dir = os.path.join(syzkaller_path, search_path)
@@ -701,7 +697,7 @@ class Deployer(Workers):
                         res.append(syscall)
                     break
         return res
-    
+
     def __extract_raw_syscall(self, syscalls):
         res = []
         for call in syscalls:
@@ -799,7 +795,7 @@ class Deployer(Workers):
                 self.logger.info("Fail to delete directory {}".format(des))
         shutil.move(src, des)
         self.current_case_path = des
-    
+
     def __move_to_succeed(self, new_impact_type):
         self.logger.info("Copy to succeed")
         src = self.current_case_path
@@ -817,7 +813,7 @@ class Deployer(Workers):
                 self.logger.info("Fail to delete directory {}".format(des))
         shutil.move(src, des)
         self.current_case_path = des
-    
+
     def __move_to_error(self):
         self.logger.info("Copy to error")
         src = self.current_case_path
@@ -858,12 +854,12 @@ class Deployer(Workers):
                 except:
                     self.logger.info("Fail to copy the duplicated case from {}".format(src))
         return False, False
-    
+
     def __get_default_log_format(self):
         return logging.Formatter('%(asctime)s %(levelname)s [{}] %(message)s'.format(self.index))
 
     def __init_case_logger(self, logger_name):
-        
+
         handler = logging.FileHandler("{}/log".format(self.current_case_path))
         format = logging.Formatter('%(asctime)s [{}] %(message)s'.format(self.index))
         handler.setFormatter(format)
@@ -874,7 +870,7 @@ class Deployer(Workers):
         if self.debug:
             logger.propagate = True
         return logger
-    
+
     def __init_case_info_logger(self, logger_name):
         handler = logging.FileHandler("{}/info".format(self.current_case_path))
         format = self.__get_default_log_format()
