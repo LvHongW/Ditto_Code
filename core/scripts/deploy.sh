@@ -108,6 +108,11 @@ export GOPATH=$CASE_PATH/gopath
 export GOROOT=$PROJECT_PATH/tools/goroot
 export LLVM_BIN=$PROJECT_PATH/tools/llvm/build/bin
 export PATH=$GOROOT/bin:$LLVM_BIN:$PATH
+
+# Add cross-compiler to PATH for syzkaller executor build (arm64)
+if [ "$ARCH" = "arm64" ]; then
+  export PATH=$PROJECT_PATH/tools/aarch64-gcc/bin:$PATH
+fi
 echo "[+] Downloading golang"
 go version || build_golang
 
@@ -186,6 +191,46 @@ if [ ! -f "$CASE_PATH/.stamp/BUILD_KERNEL" ]; then
   git stash || echo "it's ok"
   make clean > /dev/null || echo "it's ok"
   git clean -fdx -e THIS_KERNEL_IS_BEING_USED > /dev/null || echo "it's ok"
+  if ! git cat-file -t $COMMIT >/dev/null 2>&1; then
+    echo "[WARNING] Commit $COMMIT not found, fetching from additional remotes..."
+    # Try to fetch from arm64, linux-next, and bcachefs trees
+    for remote in arm64 linux-next bcachefs; do
+      if git remote get-url $remote >/dev/null 2>&1; then
+        echo "[INFO] Fetching from $remote..."
+        git fetch $remote 2>/dev/null || true
+        if git cat-file -t $COMMIT >/dev/null 2>&1; then
+          echo "[INFO] Found commit in $remote tree"
+          break
+        fi
+      fi
+    done
+    # If still not found, fall back to closest tag by date
+    if ! git cat-file -t $COMMIT >/dev/null 2>&1; then
+      echo "[WARNING] Commit still not found, finding closest tag by date..."
+      # Find the tag with the closest date to the commit
+      CLOSEST_TAG=""
+      MIN_DIFF=999999999
+      # Only consider mainline tags (v*.*.*) from the origin remote
+      for tag in $(git tag -l 'v*' --sort=-creatordate | head -30); do
+        TAG_DATE=$(git log -1 --format="%at" $tag 2>/dev/null)
+        if [ -n "$TAG_DATE" ]; then
+          DIFF=$((TAG_DATE - $(date -d "2024-09-23" +%s 2>/dev/null || echo 0)))
+          DIFF=${DIFF#-}  # absolute value
+          if [ $DIFF -lt $MIN_DIFF ]; then
+            MIN_DIFF=$DIFF
+            CLOSEST_TAG=$tag
+          fi
+        fi
+      done
+      if [ -n "$CLOSEST_TAG" ]; then
+        echo "[WARNING] Using closest tag: $CLOSEST_TAG"
+        COMMIT=$CLOSEST_TAG
+      else
+        echo "[ERROR] No suitable tag found, cannot checkout kernel"
+        exit 1
+      fi
+    fi
+  fi
   git checkout -f $COMMIT || exit 1
   cp $CASE_PATH/basic_info/config .config
 

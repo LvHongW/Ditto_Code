@@ -1,7 +1,17 @@
 #!/bin/bash
 
 if [ ! -f "$(pwd)/tools/.stamp/ENV_SETUP" ]; then
-  sudo apt-get -y install gdb curl git wget qemu-system-x86 qemu-system-arm debootstrap flex bison libssl-dev libelf-dev locales cmake libxml2-dev libz3-dev bc libncurses5 gcc-multilib g++-multilib dwarves qemu-user-static gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+  sudo apt-get -y install gdb curl git wget qemu-system-x86 debootstrap flex bison libssl-dev libelf-dev locales cmake libxml2-dev libz3-dev bc libncurses5 gcc-multilib g++-multilib dwarves
+fi
+
+# ARM64 packages: separate stamp so they're installed even if ENV_SETUP already exists
+if [ ! -f "$(pwd)/tools/.stamp/SETUP_ARM64_PKGS" ]; then
+  sudo apt-get -y install qemu-system-arm qemu-user-static gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+  # Create qemu-arm64-static symlink if needed (binfmt uses aarch64, create-image.sh may use arm64)
+  if [ -f /usr/bin/qemu-aarch64-static ] && [ ! -f /usr/bin/qemu-arm64-static ]; then
+    sudo ln -sf /usr/bin/qemu-aarch64-static /usr/bin/qemu-arm64-static
+  fi
+  touch "$(pwd)/tools/.stamp/SETUP_ARM64_PKGS"
 fi
 
 if [ ! -d "work/completed" ]; then
@@ -34,13 +44,23 @@ if [ ! -f "$TOOLS_PATH/.stamp/BUILD_IMAGE" ]; then
     wget https://storage.googleapis.com/syzkaller/wheezy.img.key > /dev/null
     chmod 400 wheezy.img.key
   fi
-  # ARM64 image: build using syzkaller's create-image.sh
-  if [ ! -f "arm64-trixie.img" ]; then
+  touch $TOOLS_PATH/.stamp/BUILD_IMAGE
+  cd ..
+fi
+
+# ARM64 image: separate stamp so it's not blocked by existing x86 BUILD_IMAGE
+echo "[+] Building ARM64 image"
+if [ ! -f "$TOOLS_PATH/.stamp/BUILD_ARM64_IMAGE" ]; then
+  if [ ! -d "$TOOLS_PATH/img" ]; then
+    mkdir -p $TOOLS_PATH/img
+  fi
+  if [ ! -f "$TOOLS_PATH/img/arm64-trixie.img" ]; then
     echo "[+] Building ARM64 image (this may take a while...)"
     SYZ_IMG_DIR=$(mktemp -d)
     cp $TOOLS_PATH/gopath/src/github.com/google/syzkaller/tools/create-image.sh $SYZ_IMG_DIR/
     cd $SYZ_IMG_DIR
-    bash create-image.sh -a arm64 || echo "[WARNING] ARM64 image build failed, ARM64 cases will not work"
+    # create-image.sh needs sudo for debootstrap; use aarch64 to match binfmt entry names
+    sudo bash create-image.sh -a aarch64 || echo "[WARNING] ARM64 image build failed, ARM64 cases will not work"
     if [ -f "trixie.img" ]; then
       mv trixie.img $TOOLS_PATH/img/arm64-trixie.img
       mv trixie.id_rsa $TOOLS_PATH/img/arm64-trixie.img.key
@@ -50,10 +70,9 @@ if [ ! -f "$TOOLS_PATH/.stamp/BUILD_IMAGE" ]; then
       echo "[WARNING] ARM64 image not created"
     fi
     rm -rf $SYZ_IMG_DIR
-    cd $TOOLS_PATH/img
+    cd $TOOLS_PATH
   fi
-  touch $TOOLS_PATH/.stamp/BUILD_IMAGE
-  cd ..
+  touch $TOOLS_PATH/.stamp/BUILD_ARM64_IMAGE
 fi
 
 echo "[+] Building gcc and clang"

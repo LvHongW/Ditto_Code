@@ -60,7 +60,7 @@ syz_config_template="""
 class Deployer(Workers):
     def __init__(self, hash_val, index, parallel_run, parallel_max, debug=False, force=False, port=53777, replay='incomplete', basicinfo=False, linux_index=-1, time=8, key_syscall=None, kernel_fuzzing=False, mutate_time=500, mutate_type="Activation", calltrace_sim='0.5', repro_sim='0.5', reproduce=False, alert=[], gdb_port=1235, qemu_monitor_port=9700, max_compiling_kernel=-1, store_read=True):
         Workers.__init__(self, index, parallel_max, debug, force, port, replay, linux_index, time, key_syscall, kernel_fuzzing, reproduce, alert, gdb_port, qemu_monitor_port, max_compiling_kernel, store_read)
-        self.save_linux_folder = '/home/user/Ditto/linux_folder'
+        self.save_linux_folder = os.path.join(os.getcwd(), "work/linux_folder")
         os.makedirs(self.save_linux_folder, exist_ok=True)
         self.basicinfo = basicinfo
         if not self.basicinfo:
@@ -68,7 +68,7 @@ class Deployer(Workers):
         self.mutate_time = mutate_time
         self.mutate_type = mutate_type
         self.calltracesim = calltrace_sim
-        self.reprosim = reprosim
+        self.reprosim = repro_sim
 
     def init_replay_crash(self, hash_val):
         chmodX("core/scripts/init-replay.sh")

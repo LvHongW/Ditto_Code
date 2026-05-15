@@ -1,0 +1,38 @@
+2026-05-12 09:35:04,444 INFO case:247ac87 deploy start...
+2026-05-12 09:35:04,444 INFO Thread 0: run case 247ac87eabcb1f8fa990 [0/1] left
+2026-05-12 09:35:04,558 INFO case:247ac87 deploy done!
+2026-05-12 09:35:12,565 INFO case queue is empty!
+2026-05-12 09:35:12,565 INFO Thread 0 exit->
+2026-05-12 10:36:43,638 INFO case:247ac87 deploy start...
+2026-05-12 10:36:43,638 INFO Thread 0: run case 247ac87eabcb1f8fa990 [0/1] left
+2026-05-12 10:40:51,035 INFO case:247ac87 deploy done!
+2026-05-12 10:40:59,042 INFO case queue is empty!
+2026-05-12 10:40:59,042 INFO Thread 0 exit->
+2026-05-12 10:44:58,920 INFO case:247ac87 deploy start...
+2026-05-12 10:44:58,921 INFO Thread 0: run case 247ac87eabcb1f8fa990 [0/1] left
+2026-05-12 11:52:52,587 INFO case:247ac87 deploy done!
+2026-05-12 11:53:00,741 INFO case queue is empty!
+2026-05-12 11:53:00,741 INFO Thread 0 exit->
+2026-05-12 15:26:13,809 INFO case:0391d34 deploy start...
+2026-05-12 15:26:13,809 INFO Thread 0: run case 0391d34e801643e2809b [1/2] left
+2026-05-12 15:26:35,699 INFO case:0391d34 deploy done!
+2026-05-12 15:27:15,461 INFO case:247ac87 deploy start...
+2026-05-12 15:27:15,462 INFO Thread 0: run case 247ac87eabcb1f8fa990 [0/1] left
+2026-05-12 15:30:56,644 INFO case:247ac87 deploy done!
+2026-05-12 15:31:04,650 INFO case queue is empty!
+2026-05-12 15:31:04,650 INFO Thread 0 exit->
+2026-05-12 17:12:28,137 INFO case:247ac87 deploy start...
+2026-05-12 17:12:28,165 INFO Thread 0: run case 247ac87eabcb1f8fa990 [0/1] left
+2026-05-12 17:14:06,767 INFO case:247ac87 deploy done!
+2026-05-12 17:14:14,773 INFO case queue is empty!
+2026-05-12 17:14:14,774 INFO Thread 0 exit->
+2026-05-12 17:18:48,458 INFO case:247ac87 deploy start...
+2026-05-12 17:18:48,458 INFO Thread 0: run case 247ac87eabcb1f8fa990 [0/1] left
+2026-05-12 18:19:06,337 INFO case:247ac87 deploy done!
+2026-05-12 18:19:14,349 INFO case queue is empty!
+2026-05-12 18:19:14,350 INFO Thread 0 exit->
+2026-05-15 10:09:33,436 INFO case:247ac87 deploy start...
+2026-05-15 10:09:33,437 INFO Thread 0: run case 247ac87eabcb1f8fa990 [0/1] left
+2026-05-15 10:14:40,268 INFO case:247ac87 deploy done!
+2026-05-15 10:14:48,281 INFO case queue is empty!
+2026-05-15 10:14:48,281 INFO Thread 0 exit->
