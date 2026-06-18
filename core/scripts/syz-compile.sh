@@ -16,7 +16,18 @@ export LLVM_BIN=`pwd`/tools/llvm/build/bin
 export PATH=$GOROOT/bin:$LLVM_BIN:$PATH
 
 cd $SYZ_PATH
-make generate || exit 1
-rm CorrectTemplate
-make TARGETARCH=$ARCH TARGETVMARCH=amd64 || exit 1
+# make generate may fail if the description files use newer syntax than the
+# old syzkaller parser supports (e.g. syz_mount_image$* with compressed_image).
+# Try make generate; if it fails, fall back to building with existing generated code.
+if make generate 2>/dev/null; then
+  :
+else
+  echo "[syz-compile.sh] make generate failed, building with existing generated code"
+fi
+rm -f CorrectTemplate
+if [ "$ARCH" = "arm64" ]; then
+  make TARGETARCH=$ARCH TARGETVMARCH=arm64 || exit 1
+else
+  make TARGETARCH=$ARCH TARGETVMARCH=amd64 || exit 1
+fi
 exit 0

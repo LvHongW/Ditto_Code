@@ -122,6 +122,9 @@ def args_parse():
                         help='Include high risk bugs for analysis')
     parser.add_argument('--install-requirements', action='store_true',
                         help='Install required packages and compile essential tools')
+    parser.add_argument('--arch', nargs='?', default=None,
+                        choices=['amd64', 'arm64', '386'],
+                        help='Override architecture detection (amd64, arm64, 386)')
 
     args = parser.parse_args()
     return args
@@ -187,7 +190,7 @@ def deploy_one_case(index, parallel_run, args, hash_val):
                 linux_index=int(args.linux), time=int(args.timeout_kernel_fuzzing), key_syscall=args.key_syscall, kernel_fuzzing=args.kernel_fuzzing, \
                 mutate_time=int(args.mutate_time), mutate_type=args.mutate_type, calltrace_sim=float(args.calltrace_sim), repro_sim=float(args.repro_sim), reproduce=args.reproduce, alert=args.alert, qemu_monitor_port=int(args.qemu_monitor), gdb_port=int(args.gdb), \
                 max_compiling_kernel=int(args.max_compiling_kernel_concurrently), parallel_max=int(args.parallel_max), \
-                store_read=args.store_read)
+                store_read=args.store_read, arch_override=args.arch)
     dp.deploy(hash_val, case)
     del dp
 

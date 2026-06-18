@@ -155,10 +155,13 @@ class Workers(Case):
         self.case_info_logger.info("compiler: "+self.compiler)
         trigger_without_mutating = False
         title = None
-        report, trigger = self.crash_checker.read_crash(case["syz_repro"], case["syzkaller"], None, 0, case["c_repro"], arch)
+        report, trigger, upload_error = self.crash_checker.read_crash(case["syz_repro"], case["syzkaller"], None, 0, case["c_repro"], arch)
         if trigger:
             trigger_without_mutating, title = self.KasanChecker(report, hash_val)
-        self.create_reproduced_ori_poc_stamp()
+        if not upload_error:
+            self.create_reproduced_ori_poc_stamp()
+        else:
+            self.logger.warning("PoC reproduction skipped due to upload error")
         return trigger_without_mutating, title
 
     def KasanChecker(self, report, hash_val):

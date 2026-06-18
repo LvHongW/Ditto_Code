@@ -55,6 +55,7 @@ done
 EOF
 CMD="scp -F /dev/null -o UserKnownHostsFile=/dev/null \
     -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+    -o ConnectTimeout=30 \
     -i $SSH_KEY -P $PORT ./run.sh root@localhost:/root"
 $CMD
 echo $CMD > run-script.sh

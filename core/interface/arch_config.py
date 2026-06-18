@@ -19,6 +19,7 @@ ARCH_CONFIG = {
         "qemu_root_dev": "/dev/sda",
         "qemu_console": "ttyS0",
         "qemu_use_drive": False,
+        "max_qemu": 4,
 
         # kernel
         "kernel_path": "arch/x86_64/boot/bzImage",
@@ -79,6 +80,9 @@ ARCH_CONFIG = {
 
         # timeouts
         "qemu_boot_timeout": 6,
+        "ssh_ready_retries": 60,  # 60 × 10s = 10 min
+        "ssh_connect_timeout": 10,  # SSH -o ConnectTimeout
+        "ssh_subprocess_timeout": 30,  # subprocess call() timeout
     },
     "arm64": {
         # syzkaller
@@ -95,17 +99,22 @@ ARCH_CONFIG = {
         "qemu_root_dev": "/dev/vda",
         "qemu_console": "ttyAMA0",
         "qemu_use_drive": True,
+        "qemu_args": "-machine virt -cpu cortex-a57",
+        "max_qemu": 1,  # TCG emulation is slow, limit to 1 VM
 
         # kernel
         "kernel_path": "arch/arm64/boot/Image",
         "kernel_make_arch": "arm64",
         "kernel_cross_compile": "aarch64-linux-gnu-",
-        "kernel_cross_compile_gcc": "aarch64-linux-gnu-gcc",
+        "kernel_cross_compile_gcc": "aarch64-linux-gnu-gcc-12",
         "kernel_boot_params": [
             "kasan_multi_shot=1", "earlyprintk=serial", "oops=panic",
             "panic=1", "ftrace_dump_on_oops=orig_cpu",
             "net.ifnames=0", "biosdevname=0",
             "earlycon=pl011,mmio32,0x09000000",
+            "rcupdate.rcu_cpu_stall_suppress=1",
+            "systemd.default_timeout_start_sec=1800",
+            "systemd.default_device_timeout_sec=30",
         ],
         "kernel_config_enable": [
             "CONFIG_HAVE_ARCH_KASAN",
@@ -114,6 +123,7 @@ ARCH_CONFIG = {
             "CONFIG_KASAN_INLINE",
             "CONFIG_DEBUG_INFO",
             "CONFIG_FRAME_POINTER",
+            "CONFIG_CC_HAS_SANCOV_TRACE_PC",
             "CONFIG_KCOV",
             "CONFIG_KCOV_INSTRUMENT_ALL",
             "CONFIG_KCOV_ENABLE_COMPARISONS",
@@ -136,7 +146,7 @@ ARCH_CONFIG = {
         "image_key_filename": "arm64-trixie.img.key",
 
         # VM boot detection
-        "startup_regex": r'Debian GNU\/Linux \d+ syzkaller ttyAMA\d+',
+        "startup_regex": r'Debian GNU/Linux.*(?:trixie|syzkaller ttyAMA)|syzkaller login:',
 
         # crash / call trace
         "call_trace_ends": ["el0_sync", "el1_sync", "el0_svc", "ret_from_fork", "bpf_prog_", "Allocated by"],
@@ -145,8 +155,11 @@ ARCH_CONFIG = {
         # GDB/pwndbg
         "need_gdb": False,
 
-        # timeouts (TCG is much slower)
-        "qemu_boot_timeout": 30,
+        # timeouts (TCG is much slower: boot ~3min, SSH retries ~25min, compile ~2min, SCP 65MB ~15min)
+        "qemu_boot_timeout": 480,  # 480 × 10s = 4800s = 80 min total QEMU timeout
+        "ssh_ready_retries": 180,  # 180 × 10s = 30 min, udev-trigger coldplug is very slow under TCG
+        "ssh_connect_timeout": 30,  # SSH -o ConnectTimeout (TCG handshake is slow)
+        "ssh_subprocess_timeout": 120,  # subprocess call() timeout (TCG crypto is slow)
     },
     "386": None,  # will be copied from amd64 with overrides
 }

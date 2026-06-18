@@ -17,20 +17,28 @@ function copy_log_then_exit() {
 
 function config_disable() {
   key=$1
-  sed -i "s/$key=n/# $key is not set/g" .config
-  sed -i "s/$key=m/# $key is not set/g" .config
-  sed -i "s/$key=y/# $key is not set/g" .config
+  if [ -f scripts/config ]; then
+    scripts/config --disable $key
+  else
+    sed -i "s/$key=n/# $key is not set/g" .config
+    sed -i "s/$key=m/# $key is not set/g" .config
+    sed -i "s/$key=y/# $key is not set/g" .config
+  fi
 }
 
 function config_enable() {
   key=$1
-  sed -i "s/$key=n/# $key is not set/g" .config
-  sed -i "s/$key=m/# $key is not set/g" .config
-  sed -i "s/# $key is not set/$key=y/g" .config
+  if [ -f scripts/config ]; then
+    scripts/config --enable $key
+  else
+    sed -i "s/$key=n/# $key is not set/g" .config
+    sed -i "s/$key=m/# $key is not set/g" .config
+    sed -i "s/# $key is not set/$key=y/g" .config
+  fi
 }
 
-if [ $# -ne 5 ] && [ $# -ne 8 ]; then
-  echo "Usage ./deploy_linux gcc_version fixed linux_path package_path max_compiling_kernel [linux_commit, config_url, mode]"
+if [ $# -ne 5 ] && [ $# -ne 8 ] && [ $# -ne 6 ] && [ $# -ne 9 ]; then
+  echo "Usage ./deploy_linux gcc_version fixed linux_path package_path max_compiling_kernel [linux_commit, config_url, mode] [arch]"
   exit 1
 fi
 
@@ -39,9 +47,26 @@ FIXED=$2
 LINUX=$3
 MAX_COMPILING_KERNEL=$5
 N_CORES=$((`nproc` / $MAX_COMPILING_KERNEL))
-echo "Compiler: "$COMPILER_VERSION | grep gcc && \
-COMPILER=$4/tools/$COMPILER_VERSION/bin/gcc || \
-COMPILER=$4/tools/$COMPILER_VERSION/bin/clang
+
+# Check for arch parameter (last param if 6 or 9 args)
+ARCH="amd64"
+MAKE_ARCH=""
+CROSS_COMPILE=""
+if [ $# -eq 6 ]; then
+  ARCH=$6
+fi
+if [ $# -eq 9 ]; then
+  ARCH=$9
+fi
+if [ "$ARCH" = "arm64" ]; then
+  COMPILER=$4/tools/aarch64-gcc/bin/aarch64-linux-gnu-gcc
+  CROSS_COMPILE="aarch64-linux-gnu-"
+  MAKE_ARCH="ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE"
+else
+  echo "Compiler: "$COMPILER_VERSION | grep gcc && \
+  COMPILER=$4/tools/$COMPILER_VERSION/bin/gcc || \
+  COMPILER=$4/tools/$COMPILER_VERSION/bin/clang
+fi
 
 if [ $# -eq 8 ]; then
   COMMIT=$6
@@ -128,6 +153,6 @@ do
   config_enable $key
 done
 
-make olddefconfig CC=$COMPILER
-make -j$N_CORES CC=$COMPILER > make.log 2>&1 || copy_log_then_exit make.log
+make olddefconfig $MAKE_ARCH CC=$COMPILER
+make -j$N_CORES $MAKE_ARCH CC=$COMPILER > make.log 2>&1 || copy_log_then_exit make.log
 exit 0

@@ -67,7 +67,7 @@ class CrashChecker:
             if exitcode == 1:
                 self.logger.info("Error occur at deploy_linux.sh")
                 return [False, None]
-        ori_crash_report, trigger = self.read_crash(syz_repro, syz_commit, log, 0, c_repro, arch)
+        ori_crash_report, trigger, upload_error = self.read_crash(syz_repro, syz_commit, log, 0, c_repro, arch)
         if ori_crash_report == []:
             self.logger.info("No crash trigger by original poc")
             return [False, None]
@@ -128,7 +128,7 @@ class CrashChecker:
             key = os.path.basename(path)
             path_repro = os.path.join(path, "repro.prog")
             self.case_logger.info("[Crash] Go for {}".format(path_repro))
-            ori_crash_report, trigger = self.read_crash(path_repro, syz_commit, None, 0, c_repro, arch)
+            ori_crash_report, trigger, upload_error = self.read_crash(path_repro, syz_commit, None, 0, c_repro, arch)
             if ori_crash_report != []:
                 if trigger:
 
@@ -152,7 +152,7 @@ class CrashChecker:
         for path in crashes_path:
             key = os.path.basename(path)
             path_repro = os.path.join(path, "repro.prog")
-            ori_crash_report, trigger = self.read_crash(path_repro, syz_commit, None, 1, c_repro, arch)
+            ori_crash_report, trigger, upload_error = self.read_crash(path_repro, syz_commit, None, 1, c_repro, arch)
             if ori_crash_report != []:
                 if trigger:
                     self.logger.info("Reproduceable: {} in patch_version".format(key))
@@ -263,6 +263,7 @@ class CrashChecker:
         self.kill_qemu = False
         res = []
         trigger = False
+        upload_error = False
         repro_type = utilities.CASE
         if utilities.regx_match(r'https:\/\/syzkaller\.appspot\.com\/', syz_repro):
             repro_type = utilities.URL
@@ -298,8 +299,9 @@ class CrashChecker:
         if len(res) == 1 and isinstance(res[0], str):
             self.case_logger.error(res[0])
             self.logger.error(res[0])
-            return [], trigger
-        return res, trigger
+            upload_error = True
+            return [], trigger, upload_error
+        return res, trigger, upload_error
 
     def read_existed_crash(self, crash_path):
         res = []
@@ -399,7 +401,36 @@ class CrashChecker:
                 if p.poll() != None and not qemu.qemu_ready:
                     qemu_close = True
                 if qemu.qemu_ready and out_begin == 0:
-                    self.case_logger.info("[Crash] upload_exp start")
+                    ssh_retries = self.arch_config.get("ssh_ready_retries", 60)
+                    ssh_connect_timeout = self.arch_config.get("ssh_connect_timeout", 10)
+                    ssh_subprocess_timeout = self.arch_config.get("ssh_subprocess_timeout", 30)
+                    self.case_logger.info("[Crash] waiting for SSH before upload_exp ({} retries, connect_timeout={}s, subprocess_timeout={}s)".format(ssh_retries, ssh_connect_timeout, ssh_subprocess_timeout))
+                    ssh_ready = False
+                    for ssh_retry in range(ssh_retries):
+                        if not qemu.qemu_ready or self.kill_qemu:
+                            break
+                        try:
+                            ret = call(["ssh", "-F", "/dev/null", "-o", "UserKnownHostsFile=/dev/null",
+                                "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+                                "-o", "StrictHostKeyChecking=no",
+                                "-o", "ConnectTimeout={}".format(ssh_connect_timeout),
+                                "-i", self._ssh_key_path(),
+                                "-p", str(self.ssh_port+th_index),
+                                "root@localhost", "echo SSH_READY"],
+                                stdout=PIPE, stderr=STDOUT, timeout=ssh_subprocess_timeout)
+                            if ret == 0:
+                                ssh_ready = True
+                                break
+                        except Exception:
+                            pass
+                        if (ssh_retry + 1) % 10 == 0:
+                            self.case_logger.info("[Crash] SSH retry {}/{}...".format(ssh_retry + 1, ssh_retries))
+                        time.sleep(10)
+                    if not ssh_ready:
+                        self.case_logger.error("[Crash] SSH not ready after {} retries".format(ssh_retries))
+                        p.kill()
+                        break
+                    self.case_logger.info("[Crash] SSH ready, starting upload_exp")
                     ok = self.upload_exp(syz_repro, self.ssh_port+th_index, syz_commit, repro_type, c_repro, arch, fixed, qemu.qemu_logger)
                     if not ok:
                         p.kill()
@@ -483,8 +514,10 @@ class CrashChecker:
         return exitcode
 
     def upload_custom_exp(self, path, port, logger=None):
+        ssh_connect_timeout = self.arch_config.get("ssh_connect_timeout", 10)
         p = Popen(["scp", "-F", "/dev/null", "-o", "UserKnownHostsFile=/dev/null", \
             "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", \
+            "-o", "ConnectTimeout={}".format(ssh_connect_timeout), \
             "-i", self._ssh_key_path(), "-P", str(port), path, "root@localhost:/root/poc"],
         stdout=PIPE,
         stderr=STDOUT)
@@ -526,8 +559,10 @@ class CrashChecker:
             self.case_logger.error("QEMU threaded {}: Usually, there is no reproducer in the crash".format(th_index))
             return 0
 
+        ssh_connect_timeout = self.arch_config.get("ssh_connect_timeout", 10)
         p2 = Popen(["ssh", "-F", "/dev/null", "-o", "UserKnownHostsFile=/dev/null",
         "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
+        "-o", "ConnectTimeout={}".format(ssh_connect_timeout),
         "-i", self._ssh_key_path(),
         "-p", str(port), "root@localhost", "chmod +x run.sh && ./run.sh "+str(th_index & 1)],
         stdout=PIPE,
@@ -539,8 +574,10 @@ class CrashChecker:
         return 1
 
     def run_custom_exp(self, port, logger=None):
+        ssh_connect_timeout = self.arch_config.get("ssh_connect_timeout", 10)
         p2 = Popen(["ssh", "-F", "/dev/null", "-o", "UserKnownHostsFile=/dev/null",
         "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
+        "-o", "ConnectTimeout={}".format(ssh_connect_timeout),
         "-i", self._ssh_key_path(),
         "-p", str(port), "root@localhost", "./poc"],
         stdout=PIPE,
@@ -805,7 +842,7 @@ def reproduce_with_ori_poc(index):
         if checker.deploy_linux(commit,config,0) == 1:
             print("Thread {}: running case {}: Error occur in deploy_linux.sh".format(index, hash[:7]))
             continue
-        report, trigger = checker.read_crash(case["syz_repro"], case["syzkaller"], None, 0, case["c_repro"], arch)
+        report, trigger, upload_error = checker.read_crash(case["syz_repro"], case["syzkaller"], None, 0, case["c_repro"], arch)
         if report != [] and trigger:
             for each in report:
                 for line in each:

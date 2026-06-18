@@ -8,16 +8,24 @@ LATEST="9b1f3e6"
 
 function config_disable() {
   key=$1
-  sed -i "s/$key=n/# $key is not set/g" .config
-  sed -i "s/$key=m/# $key is not set/g" .config
-  sed -i "s/$key=y/# $key is not set/g" .config
+  if [ -f scripts/config ]; then
+    scripts/config --disable $key
+  else
+    sed -i "s/$key=n/# $key is not set/g" .config
+    sed -i "s/$key=m/# $key is not set/g" .config
+    sed -i "s/$key=y/# $key is not set/g" .config
+  fi
 }
 
 function config_enable() {
   key=$1
-  sed -i "s/$key=n/# $key is not set/g" .config
-  sed -i "s/$key=m/# $key is not set/g" .config
-  sed -i "s/# $key is not set/$key=y/g" .config
+  if [ -f scripts/config ]; then
+    scripts/config --enable $key
+  else
+    sed -i "s/$key=n/# $key is not set/g" .config
+    sed -i "s/$key=m/# $key is not set/g" .config
+    sed -i "s/# $key is not set/$key=y/g" .config
+  fi
 }
 
 function copy_log_then_exit() {
@@ -70,11 +78,11 @@ MAX_COMPILING_KERNEL=${12}
 save_linux_folder=${13}
 PROJECT_PATH="$(pwd)"
 PKG_NAME="core"
-CASE_PATH=$PROJECT_PATH/work/$CATALOG/$HASH
+CASE_PATH=$PROJECT_PATH/work/$CATALOG/$INDEX
 PATCHES_PATH=$PROJECT_PATH/$PKG_NAME/patches
 LLVM_PATCHED_PATH=$PROJECT_PATH/tools/llvm/build
 
-# ARM64 uses cross-compiler instead of syzkaller-provided compilers
+# ARM64 uses cross-compiler (gcc-12 required for KCOV on arm64 due to ARCH_WANTS_NO_INSTR)
 if [ "$ARCH" = "arm64" ]; then
   COMPILER=$PROJECT_PATH/tools/aarch64-gcc/bin/aarch64-linux-gnu-gcc
   CROSS_COMPILE="aarch64-linux-gnu-"
@@ -140,11 +148,91 @@ if [ ! -f "$CASE_PATH/.stamp/BUILD_SYZKALLER" ]; then
   cd $GOPATH/src/github.com/google/syzkaller || exit 1
   make clean
   git stash --all || set_git_config
-  git checkout -f 9b1f3e665308ee2ddd5b3f35a078219b5c509cdb
-  patch -p1 -i $PATCHES_PATH/syzkaller-9b1f3e6-ditto.patch
 
-  # TARGETVMARCH is always amd64 (syz-execprog runs on host), TARGETARCH is the VM target
-  make TARGETARCH=$ARCH TARGETVMARCH=amd64
+  # Use the case's syzkaller commit (supports compressed_image, bcachefs, etc.)
+  # The old Ditto base commit (9b1f3e6) predates compressed_image and bcachefs.
+  # Newer syzkaller versions (e.g. 6f888b75) support these natively.
+  DITTO_BASE="9b1f3e665308ee2ddd5b3f35a078219b5c509cdb"
+  echo "[deploy.sh] syzkaller commit: $SYZKALLER (ditto base: $DITTO_BASE)"
+  git checkout -f $SYZKALLER
+
+  # Only apply Ditto patch if using the old base commit
+  if [ "$SYZKALLER" = "$DITTO_BASE" ]; then
+    echo "[deploy.sh] Applying Ditto patch for base commit"
+    patch -p1 -i $PATCHES_PATH/syzkaller-9b1f3e6-ditto.patch
+
+    # Add bcachefs + compressed_image support (needed for newer syzbot testcases)
+    # The Ditto base commit (9b1f3e6, Mar 2020) predates both the compressed_image
+    # type (Nov 2022) and bcachefs descriptions (May 2024). Add minimal support.
+    cp $PROJECT_PATH/tools/gopath/src/github.com/google/syzkaller/sys/linux/filesystem.txt sys/linux/filesystem.txt
+    # prog/types.go: add BufferCompressed to BufferKind enum (after BufferText)
+    sed -i 's/^\tBufferText$/&\n\tBufferCompressed/' prog/types.go
+    # prog/types.go: add IsCompressed() method (before type ArrayKind)
+    sed -i 's/^type ArrayKind int$/\nfunc (t *BufferType) IsCompressed() bool {\n\treturn t.Kind == BufferCompressed\n}\n\n&/' prog/types.go
+    # pkg/compiler/types.go: append typeCompressedImage before init()
+    cat > /tmp/ditto_tci.go << 'TCIEOF'
+// typeCompressedImage is used for compressed disk images.
+var typeCompressedImage = &typeDesc{
+	Names:     []string{"compressed_image"},
+	CantBeOpt: true,
+	CanBeArgRet: func(comp *compiler, t *ast.Type) (bool, bool) {
+		return true, false
+	},
+	Varlen: func(comp *compiler, t *ast.Type, args []*ast.Type) bool {
+		return true
+	},
+	Gen: func(comp *compiler, t *ast.Type, args []*ast.Type, base prog.IntTypeCommon) prog.Type {
+		base.TypeSize = 0
+		return &prog.BufferType{
+			TypeCommon: base.TypeCommon,
+			Kind:       prog.BufferCompressed,
+		}
+	},
+}
+TCIEOF
+    sed -i '$ r /tmp/ditto_tci.go' pkg/compiler/types.go
+    rm -f /tmp/ditto_tci.go
+    # pkg/compiler/types.go: add typeCompressedImage to builtins list
+    sed -i 's/\t\ttypeFmt,/\t\ttypeCompressedImage,\n\t\ttypeFmt,/' pkg/compiler/types.go
+  else
+    echo "[deploy.sh] Using native syzkaller (skipping Ditto patch)"
+  fi
+
+  # ARM64: increase timeouts for TCG emulation (udev-trigger takes 10+ min)
+  if [ "$ARCH" = "arm64" ]; then
+    # Increase SSH/SCP timeouts for slow TCG emulation
+    sed -i 's/WaitForSSH(inst.debug, [0-9]*\*time.Minute/WaitForSSH(inst.debug, 60*time.Minute/' vm/qemu/qemu.go 2>/dev/null || true
+    sed -i 's/WaitForSSH([0-9]*\*time.Minute/WaitForSSH(60*time.Minute/' vm/qemu/qemu.go 2>/dev/null || true
+    sed -i 's/RunCmd([0-9]*\*time.Minute, "", "scp"/RunCmd(30*time.Minute, "", "scp"/' vm/qemu/qemu.go 2>/dev/null || true
+    sed -i 's/RunCmd([0-9]*\*time.Minute, "", "scp"/RunCmd(30*time.Minute, "", "scp"/' vm/qemu/qemu.go 2>/dev/null || true
+    sed -i 's/RunCmd(time.Minute, "", executor/RunCmd(10*time.Minute, "", executor/' pkg/host/features.go 2>/dev/null || true
+    sed -i 's/RunCmd([0-9]*\*time.Minute, "", executor/RunCmd(10*time.Minute, "", executor/' pkg/host/features.go 2>/dev/null || true
+  fi
+
+  # For ARM64: syz-fuzzer/syz-execprog run inside the VM, so TARGETVMARCH must be arm64
+  # For amd64: syz-fuzzer/syz-execprog run on the host, TARGETVMARCH=amd64
+  if [ "$ARCH" = "arm64" ]; then
+    # The Makefile's generate_rpc target requires flatc >= 2.0 (--warnings-as-errors).
+    # Extract pre-generated flatrpc files from git instead of running flatc 1.12.
+    mkdir -p pkg/flatrpc
+    git show HEAD:pkg/flatrpc/flatrpc.h > pkg/flatrpc/flatrpc.h 2>/dev/null && \
+      echo "[deploy.sh] Extracted flatrpc.h from git" || \
+      echo "[deploy.sh] WARNING: could not extract flatrpc.h"
+    git show HEAD:pkg/flatrpc/flatrpc.go > pkg/flatrpc/flatrpc.go 2>/dev/null && \
+      echo "[deploy.sh] Extracted flatrpc.go from git" || \
+      echo "[deploy.sh] WARNING: could not extract flatrpc.go"
+    make TARGETARCH=arm64 TARGETVMARCH=arm64
+    # Create symlinks so syz-manager finds ARM64 binaries in bin/
+    cd bin
+    ln -sf linux_arm64/syz-fuzzer syz-fuzzer
+    ln -sf linux_arm64/syz-execprog syz-execprog
+    ln -sf linux_arm64/syz-executor syz-executor
+    ln -sf linux_arm64/syz-stress syz-stress
+    cd ..
+  else
+    make TARGETARCH=$ARCH TARGETVMARCH=amd64
+  fi
+
   if [ ! -d "workdir" ]; then
     mkdir workdir
   fi
@@ -211,7 +299,7 @@ if [ ! -f "$CASE_PATH/.stamp/BUILD_KERNEL" ]; then
       CLOSEST_TAG=""
       MIN_DIFF=999999999
       # Only consider mainline tags (v*.*.*) from the origin remote
-      for tag in $(git tag -l 'v*' --sort=-creatordate | head -30); do
+      for tag in $(git tag -l 'v*' --sort=-creatordate | head -200); do
         TAG_DATE=$(git log -1 --format="%at" $tag 2>/dev/null)
         if [ -n "$TAG_DATE" ]; then
           DIFF=$((TAG_DATE - $(date -d "2024-09-23" +%s 2>/dev/null || echo 0)))
@@ -242,6 +330,7 @@ if [ ! -f "$CASE_PATH/.stamp/BUILD_KERNEL" ]; then
       CONFIG_KASAN_INLINE
       CONFIG_DEBUG_INFO
       CONFIG_FRAME_POINTER
+      CONFIG_CC_HAS_SANCOV_TRACE_PC
       CONFIG_KCOV
       CONFIG_KCOV_INSTRUMENT_ALL
       CONFIG_KCOV_ENABLE_COMPARISONS

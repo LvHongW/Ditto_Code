@@ -3,7 +3,7 @@
 set -ex
 echo "running upload-exp.sh"
 
-if [ $# -ne 11 ]; then
+if [ $# -ne 10 ]; then
   echo "Usage ./upload-exp.sh case_path syz_repro_url ssh_port image_path syz_commit type c_repro fixed gcc_version arch"
   exit 1
 fi
@@ -47,6 +47,7 @@ else
 fi
 scp -F /dev/null -o UserKnownHostsFile=/dev/null \
     -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+    -o ConnectTimeout=30 \
     -i $SSH_KEY -P $PORT ./testcase root@localhost:/root
 
 if [ "$FIXED" == "0" ]; then
@@ -64,9 +65,14 @@ if [ "$FIXED" == "0" ]; then
         git checkout -f $SYZKALLER || (git pull https://github.com/google/syzkaller.git master > /dev/null 2>&1 && git checkout -f $SYZKALLER)
         git rev-list HEAD | grep $(git rev-parse dfd609eca1871f01757d6b04b19fc273c87c14e5) || EXITCODE=2
         # TARGETVMARCH is always amd64 (syz-execprog runs on host), TARGETARCH is VM target
-        make TARGETARCH=$ARCH TARGETVMARCH=amd64 execprog executor
+        # For ARM64: syz-execprog runs inside VM, so TARGETVMARCH must be arm64
+        if [ "$ARCH" = "arm64" ]; then
+            make TARGETARCH=arm64 TARGETVMARCH=arm64 execprog executor
+        else
+            make TARGETARCH=$ARCH TARGETVMARCH=amd64 execprog executor
+        fi
         if [ -d "bin/linux_$ARCH" ]; then
-            cp bin/linux_amd64/syz-execprog $BIN_PATH
+            cp bin/linux_$ARCH/syz-execprog $BIN_PATH
             cp bin/linux_$ARCH/syz-executor $BIN_PATH
         else
             cp bin/syz-execprog $BIN_PATH
@@ -89,7 +95,7 @@ fi
 if [ ! -f "$BIN_PATH/syz-execprog" ]; then
     SYZ_PATH=$CASE_PATH/poc/gopath/src/github.com/google/syzkaller/
     if [ -d "$SYZ_PATH/bin/linux_$ARCH" ]; then
-        cp $SYZ_PATH/bin/linux_amd64/syz-execprog $BIN_PATH
+        cp $SYZ_PATH/bin/linux_$ARCH/syz-execprog $BIN_PATH
         cp $SYZ_PATH/bin/linux_$ARCH/syz-executor $BIN_PATH
     else
         cp $SYZ_PATH/bin/syz-execprog $BIN_PATH
@@ -99,6 +105,7 @@ fi
 
 CMD="scp -F /dev/null -o UserKnownHostsFile=/dev/null \
     -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+    -o ConnectTimeout=30 \
     -i $SSH_KEY -P $PORT $BIN_PATH/syz-execprog $BIN_PATH/syz-executor root@localhost:/"
 
 $CMD

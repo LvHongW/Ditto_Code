@@ -46,7 +46,9 @@ syz_config_template="""
                 "count": {max_qemu},
                 "kernel": "{kernel_img_path}",
                 "cpu": 2,
-                "mem": 2048
+                "mem": 2048,
+                "cmdline": "{vm_cmdline}",
+                "qemu_args": "{qemu_args}"
         }},
         "enable_syscalls": [
             {enable_syscalls}
@@ -56,13 +58,41 @@ syz_config_template="""
         ]
 }}"""
 
+# Minimal config for native syzkaller (no Ditto-specific fields)
+syz_config_template_native="""
+{{
+        "target": "{syz_target}",
+        "http": "0.0.0.0:{ssh_port}",
+        "workdir": "{syzkaller_path}/workdir",
+        "kernel_obj": "{kernel_path}",
+        "image": "{image_path}",
+        "sshkey": "{sshkey_path}",
+        "syzkaller": "{syzkaller_path}",
+        "procs": 8,
+        "type": "qemu",
+        "vm": {{
+                "count": {max_qemu},
+                "kernel": "{kernel_img_path}",
+                "cpu": 2,
+                "mem": 2048,
+                "cmdline": "{vm_cmdline}",
+                "qemu_args": "{qemu_args}"
+        }},
+        "enable_syscalls": [
+            {enable_syscalls}
+        ]
+}}"""
+
+DITTO_BASE_SYZKALLER = "9b1f3e665308ee2ddd5b3f35a078219b5c509cdb"
+
 
 class Deployer(Workers):
-    def __init__(self, hash_val, index, parallel_run, parallel_max, debug=False, force=False, port=53777, replay='incomplete', basicinfo=False, linux_index=-1, time=8, key_syscall=None, kernel_fuzzing=False, mutate_time=500, mutate_type="Activation", calltrace_sim='0.5', repro_sim='0.5', reproduce=False, alert=[], gdb_port=1235, qemu_monitor_port=9700, max_compiling_kernel=-1, store_read=True):
+    def __init__(self, hash_val, index, parallel_run, parallel_max, debug=False, force=False, port=53777, replay='incomplete', basicinfo=False, linux_index=-1, time=8, key_syscall=None, kernel_fuzzing=False, mutate_time=500, mutate_type="Activation", calltrace_sim='0.5', repro_sim='0.5', reproduce=False, alert=[], gdb_port=1235, qemu_monitor_port=9700, max_compiling_kernel=-1, store_read=True, arch_override=None):
         Workers.__init__(self, index, parallel_max, debug, force, port, replay, linux_index, time, key_syscall, kernel_fuzzing, reproduce, alert, gdb_port, qemu_monitor_port, max_compiling_kernel, store_read)
         self.save_linux_folder = os.path.join(os.getcwd(), "work/linux_folder")
         os.makedirs(self.save_linux_folder, exist_ok=True)
         self.basicinfo = basicinfo
+        self.arch_override = arch_override
         if not self.basicinfo:
             self.clone_linux(hash_val)
         self.mutate_time = mutate_time
@@ -75,6 +105,44 @@ class Deployer(Workers):
         self.logger.info("run: scripts/init-replay.sh {} {}".format(self.catalog, hash_val))
         call(["core/scripts/init-replay.sh", self.catalog, hash_val])
 
+    def _fix_case_data_for_arch(self, case, hash_val):
+        """Fix case data when arch override is set but crawler fetched wrong entry from syzbot.
+
+        When syzbot has multiple crash entries (e.g., amd64 and arm64), the crawler picks
+        the first one, which may not match the requested architecture. This method corrects
+        the syzkaller and kernel commits by looking up the cached case data.
+        """
+        detected_arch = detect_arch(case.get("manager", ""))
+        if detected_arch == self.arch:
+            return  # Already correct
+
+        # Try to find correct data from cached test_case.json
+        cache_path = os.path.join(self.project_path, "work/test_case.json")
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, 'r') as f:
+                    cached_cases = json.load(f)
+                full_hash = hash_val if len(hash_val) == 40 else None
+                # Search for matching case by short hash
+                for key, cached_case in cached_cases.items():
+                    if key.startswith(hash_val[:7]) or (full_hash and key == full_hash):
+                        cached_arch = detect_arch(cached_case.get("manager", ""))
+                        if cached_arch == self.arch:
+                            old_syzkaller = case.get("syzkaller", "")
+                            old_commit = case.get("commit", "")
+                            case["syzkaller"] = cached_case["syzkaller"]
+                            case["commit"] = cached_case["commit"]
+                            case["manager"] = cached_case["manager"]
+                            self.logger.info("[arch] Fixed case data from cache: syzkaller {} -> {}, commit {} -> {}, manager '{}' -> '{}'".format(
+                                old_syzkaller[:12], cached_case["syzkaller"][:12],
+                                old_commit[:12], cached_case["commit"][:12],
+                                case.get("manager", ""), cached_case["manager"]))
+                            return
+            except Exception as e:
+                self.logger.warning("[arch] Failed to read cache: {}".format(e))
+
+        self.logger.warning("[arch] Could not find cached data for arch={}, syzkaller/commit may be wrong".format(self.arch))
+
     def deploy(self, hash_val, case):
         self.setup_hash(hash_val)
         self.project_path = os.getcwd()
@@ -84,10 +152,22 @@ class Deployer(Workers):
         self.syzkaller_path = "{}/gopath/src/github.com/google/syzkaller".format(self.current_case_path)
         self.kernel_path = "{}/linux".format(self.current_case_path)
 
-        # Architecture detection from syzbot manager field
-        self.arch = detect_arch(case.get("manager", ""))
+        # Architecture detection from syzbot manager field (or CLI override)
+        if self.arch_override:
+            self.arch = self.arch_override
+            self.logger.info("[arch] Architecture overridden to: {} (from --arch)".format(self.arch))
+            # When arch is overridden, the crawler may have fetched the wrong crash entry
+            # from syzbot (e.g., amd64 instead of arm64). Fix case data from cache.
+            self._fix_case_data_for_arch(case, hash_val)
+        else:
+            self.arch = detect_arch(case.get("manager", ""))
+            self.logger.info("[arch] Detected architecture: {} from manager: '{}'".format(self.arch, case.get("manager", "")))
         self.arch_config = get_arch_config(self.arch)
-        self.logger.info("[arch] Detected architecture: {} from manager: '{}'".format(self.arch, case.get("manager", "")))
+
+        # Override VM count based on architecture (TCG is too slow for multiple VMs)
+        if "max_qemu" in self.arch_config:
+            self.max_qemu_for_one_case = self.arch_config["max_qemu"]
+            self.logger.info("[arch] VM count set to {} for {}".format(self.max_qemu_for_one_case, self.arch))
 
         if self.replay:
             self.init_replay_crash(hash_val[:7])
@@ -226,7 +306,6 @@ class Deployer(Workers):
                 p = Popen([syzkaller,
                             "--config={}/workdir/{}-poc.cfg".format(self.syzkaller_path, hash_val[:7]),
                             "-debug",
-                            "-poc",
                             ],
                     stdout=PIPE,
                     stderr=STDOUT
@@ -248,7 +327,6 @@ class Deployer(Workers):
             else:
                 p = Popen([syzkaller,
                             "--config={}/workdir/{}-poc.cfg".format(self.syzkaller_path, hash_val[:7]),
-                            "-poc",
                             ],
                     stdout=PIPE,
                     stderr=STDOUT
@@ -306,7 +384,7 @@ class Deployer(Workers):
         if text.find('syscall:') != -1:
             pattern = text.split(':')[1]
             pattern_type = utilities.SYSCALL
-            pattern = pattern + "\("
+            pattern = re.escape(pattern) + "\("
         if text.find('arg:') != -1:
             pattern = text.split(':')[1]
             pattern_type = utilities.STRUCT
@@ -452,6 +530,7 @@ class Deployer(Workers):
     def __run_delopy_script(self, hash_val, case, kasan_patch=0):
         commit = case["commit"]
         syzkaller = case["syzkaller"]
+        self.case_syzkaller = syzkaller
         config = case["config"]
         testcase = case["syz_repro"]
         time = case["time"]
@@ -504,6 +583,9 @@ class Deployer(Workers):
         new_syscalls.extend(dependent_syscalls)
         new_syscalls.extend(critical_syscalls)
         new_syscalls = utilities.unique(new_syscalls)
+        # Filter out $auto syscalls for ARM64 (they are x86-specific, generated by syz-sysgen)
+        if self.arch == "arm64":
+            new_syscalls = [s for s in new_syscalls if "$auto" not in s]
         enable_syscalls = "\"" + "\",\n\t\"".join(new_syscalls) + "\""
 
         critical_syscalls = utilities.unique(critical_syscalls)
@@ -522,6 +604,15 @@ class Deployer(Workers):
         sshkey_file_path = os.path.join(self.image_path, cfg["image_key_filename"])
         kernel_img_file_path = os.path.join(self.kernel_path, cfg["kernel_path"])
 
+        # Generate VM cmdline for systemd timeout params (needed for ARM64 TCG)
+        vm_cmdline_parts = []
+        for param in cfg.get("kernel_boot_params", []):
+            if param.startswith("systemd."):
+                vm_cmdline_parts.append(param)
+        vm_cmdline = " ".join(vm_cmdline_parts)
+
+        # Build qemu_args for ARM64 (TCG mode needs specific options)
+        qemu_args = cfg.get("qemu_args", "")
         config_params = dict(
             syzkaller_path=syzkaller_path,
             kernel_path=self.kernel_path,
@@ -544,9 +635,15 @@ class Deployer(Workers):
             en_critical_sys_seqs=en_critical_sys_seqs,
             calltracesim=self.calltracesim,
             reprosim=self.reprosim,
+            vm_cmdline=vm_cmdline,
+            qemu_args=qemu_args,
         )
 
-        syz_config = syz_config_template.format(**config_params)
+        # Use native template for non-Ditto syzkaller (no Ditto-specific config fields)
+        if self.case_syzkaller == DITTO_BASE_SYZKALLER:
+            syz_config = syz_config_template.format(**config_params)
+        else:
+            syz_config = syz_config_template_native.format(**config_params)
         f = open(os.path.join(syzkaller_path, "workdir/{}-poc.cfg".format(hash_val)), "w")
         f.writelines(syz_config)
         f.close()
@@ -560,11 +657,18 @@ class Deployer(Workers):
         new_syscalls.extend(raw_syscalls)
         new_syscalls.extend(critical_syscalls)
         new_syscalls = utilities.unique(new_syscalls)
+        # Filter out $auto syscalls for ARM64 (they are x86-specific, generated by syz-sysgen)
+        if self.arch == "arm64":
+            new_syscalls = [s for s in new_syscalls if "$auto" not in s]
         enable_syscalls = "\"" + "\",\n\t\"".join(new_syscalls) + "\""
 
         config_params["enable_syscalls"] = enable_syscalls
 
-        syz_config = syz_config_template.format(**config_params)
+        # Use native template for non-Ditto syzkaller (no Ditto-specific config fields)
+        if self.case_syzkaller == DITTO_BASE_SYZKALLER:
+            syz_config = syz_config_template.format(**config_params)
+        else:
+            syz_config = syz_config_template_native.format(**config_params)
         f = open(os.path.join(syzkaller_path, "workdir/{}.cfg".format(hash_val)), "w")
         f.writelines(syz_config)
         f.close()
