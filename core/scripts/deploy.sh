@@ -198,6 +198,11 @@ TCIEOF
     echo "[deploy.sh] Using native syzkaller (skipping Ditto patch)"
   fi
 
+
+  # Make unknown enabled syscall a warning instead of fatal error.
+  # The enable_syscalls list may contain x86 syscalls that do not exist
+  # on other architectures (e.g. open, fork, pipe on ARM64).
+  sed -i 's/return nil, fmt\.Errorf("unknown enabled syscall: %v", c)/continue/' pkg/mgrconfig/load.go
   # ARM64: increase timeouts for TCG emulation (udev-trigger takes 10+ min)
   if [ "$ARCH" = "arm64" ]; then
     # Increase SSH/SCP timeouts for slow TCG emulation
