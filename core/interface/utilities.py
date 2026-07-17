@@ -26,7 +26,19 @@ InvFree = 4
 
 requests.adapters.DEFAULT_RETRIES =5
 req_seesion = requests.session()
-req_seesion.keep_alive = False 
+req_seesion.keep_alive = False
+
+# Support HTTP/HTTPS proxy from environment variables
+# (e.g. export https_proxy=http://10.12.189.57:7891)
+_proxies = {}
+for _env_var in ('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'):
+    _val = os.environ.get(_env_var)
+    if _val:
+        _proxies['https'] = _val
+        _proxies['http'] = _val
+        break
+if _proxies:
+    req_seesion.proxies.update(_proxies)
 
 syzbot_bug_base_url = "bug?id="
 syzbot_host_url = "https://syzkaller.appspot.com/"

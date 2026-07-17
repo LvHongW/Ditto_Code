@@ -29,6 +29,8 @@ export PATH=$GOROOT/bin:$PATH
 # Determine SSH key based on architecture
 if [ "$ARCH" = "arm64" ]; then
     SSH_KEY="$IMAGE_PATH/arm64-trixie.img.key"
+elif [ "$ARCH" = "riscv64" ]; then
+    SSH_KEY="$IMAGE_PATH/riscv64-disk.raw.key"
 else
     SSH_KEY="$IMAGE_PATH/stretch.img.key"
 fi
@@ -65,9 +67,11 @@ if [ "$FIXED" == "0" ]; then
         git checkout -f $SYZKALLER || (git pull https://github.com/google/syzkaller.git master > /dev/null 2>&1 && git checkout -f $SYZKALLER)
         git rev-list HEAD | grep $(git rev-parse dfd609eca1871f01757d6b04b19fc273c87c14e5) || EXITCODE=2
         # TARGETVMARCH is always amd64 (syz-execprog runs on host), TARGETARCH is VM target
-        # For ARM64: syz-execprog runs inside VM, so TARGETVMARCH must be arm64
+        # For ARM64/RISCV64: syz-execprog runs inside VM
         if [ "$ARCH" = "arm64" ]; then
             make TARGETARCH=arm64 TARGETVMARCH=arm64 execprog executor
+        elif [ "$ARCH" = "riscv64" ]; then
+            make TARGETARCH=riscv64 TARGETVMARCH=riscv64 execprog executor
         else
             make TARGETARCH=$ARCH TARGETVMARCH=amd64 execprog executor
         fi

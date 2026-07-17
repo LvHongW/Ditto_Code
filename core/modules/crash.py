@@ -396,6 +396,9 @@ class CrashChecker:
         double_free_flag = 0
         read_flag = 0
         crash = []
+        crash_wait_start = 0
+        # Max seconds to wait for crash after PoC execution (TCG is slow, give it time)
+        crash_wait_timeout = self.arch_config.get("poc_crash_wait_timeout", 120)
         try:
             while not qemu_close:
                 if p.poll() != None and not qemu.qemu_ready:
@@ -442,7 +445,13 @@ class CrashChecker:
                         break
                     self.case_logger.info("[Crash] run_exp succeed")
                     extract_report=True
+                    crash_wait_start = time.time()
                 if extract_report:
+                    # Limit post-PoC crash monitoring time to avoid blocking forever
+                    if time.time() - crash_wait_start > crash_wait_timeout:
+                        self.case_logger.info("[Crash] No crash detected within {}s after PoC, stopping".format(crash_wait_timeout))
+                        p.kill()
+                        break
                     out_end = len(qemu.output)
                     for line in qemu.output[out_begin:]:
                         if utilities.regx_match(call_trace_regx, line) or utilities.regx_match(message_drop_regx, line):

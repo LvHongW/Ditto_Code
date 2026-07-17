@@ -240,6 +240,10 @@ class Deployer(Workers):
 
         self.init_crash_checker(self.ssh_port)
 
+        # For riscv64, download pre-built kernel + disk image from syzbot storage
+        if self.arch == "riscv64":
+            self.__download_kernel_assets_for_riscv64(case, hash_val)
+
         need_patch = 0
         r = self.__run_delopy_script(hash_val[:7], case, need_patch)
         if r != 0:
@@ -267,6 +271,8 @@ class Deployer(Workers):
                     MaintainPoC = True
                 if self.mutate_type == "Diffusion":
                     MaintainPoC = False
+                # Wait for CrashChecker QEMU port to be released before syz-manager binds
+                time.sleep(3)
                 exitcode = self.run_syzkaller(hash_val,MaintainPoC)
 
                 if exitcode !=0:
@@ -300,50 +306,40 @@ class Deployer(Workers):
         self.logger.info("run syzkaller".format(self.index))
         syzkaller = os.path.join(self.syzkaller_path, "bin/syz-manager")
         exitcode = 4
+        # For non-Ditto syzkaller (no time_limit in config), enforce timeout via subprocess
+        poc_timeout = self.time_limit * 3600  # PoC phase: full timeout
+        fuzz_timeout = self.time_limit * 3600  # Fuzz phase: full timeout
+
+        def _run_phase(config_name, timeout_sec, debug=False):
+            """Run syz-manager with a timeout, logging stdout in a background thread."""
+            pkg = self.package_path
+            syz_path = self.syzkaller_path
+            args = [syzkaller, "--config={}/workdir/{}-{}.cfg".format(syz_path, hash_val[:7], config_name)]
+            if debug:
+                args.append("-debug")
+            p = Popen(args, stdout=PIPE, stderr=STDOUT)
+            # Read stdout in a background thread so we can enforce a timeout
+            import threading
+            log_thread = threading.Thread(
+                target=self.__log_subprocess_output,
+                args=(p.stdout, logging.INFO),
+                daemon=True)
+            log_thread.start()
+            try:
+                exitcode = p.wait(timeout=timeout_sec)
+            except Exception:
+                self.logger.warning("syz-manager {} phase timeout, killing".format(config_name))
+                p.kill()
+                p.wait()
+                exitcode = 0  # timeout is expected behavior, not an error
+            log_thread.join(timeout=10)
+            return exitcode
 
         for _ in range(0, 3):
-            if self.logger.level == logging.DEBUG:
-                p = Popen([syzkaller,
-                            "--config={}/workdir/{}-poc.cfg".format(self.syzkaller_path, hash_val[:7]),
-                            "-debug",
-                            ],
-                    stdout=PIPE,
-                    stderr=STDOUT
-                    )
-                with p.stdout:
-                    self.__log_subprocess_output(p.stdout, logging.INFO)
-                exitcode = p.wait()
-                if not MaintainPoC:
-                    p = Popen([syzkaller,
-                                   "--config={}/workdir/{}.cfg".format(self.syzkaller_path, hash_val[:7]),
-                                   "-debug",
-                                   ],
-                            stdout=PIPE,
-                            stderr=STDOUT
-                            )
-                    with p.stdout:
-                        self.__log_subprocess_output(p.stdout, logging.INFO)
-                    exitcode = p.wait()
-            else:
-                p = Popen([syzkaller,
-                            "--config={}/workdir/{}-poc.cfg".format(self.syzkaller_path, hash_val[:7]),
-                            ],
-                    stdout=PIPE,
-                    stderr=STDOUT
-                    )
-                with p.stdout:
-                    self.__log_subprocess_output(p.stdout, logging.INFO)
-                exitcode = p.wait()
-                if not MaintainPoC:
-                    p = Popen([syzkaller,
-                                   "--config={}/workdir/{}.cfg".format(self.syzkaller_path, hash_val[:7]),
-                                   ],
-                            stdout=PIPE,
-                            stderr=STDOUT
-                            )
-                    with p.stdout:
-                        self.__log_subprocess_output(p.stdout, logging.INFO)
-                    exitcode = p.wait()
+            debug = self.logger.level == logging.DEBUG
+            exitcode = _run_phase("poc", poc_timeout, debug)
+            if not MaintainPoC:
+                exitcode = _run_phase(hash_val[:7], fuzz_timeout, debug)
             if exitcode != 4:
                 break
         self.logger.info("syzkaller is done with exitcode {}".format(exitcode))
@@ -544,6 +540,9 @@ class Deployer(Workers):
         # ARM64 uses its own image naming
         if self.arch == "arm64":
             image = "arm64-trixie"
+        # riscv64 downloads disk image from syzbot storage
+        if self.arch == "riscv64":
+            image = "riscv64-disk"
         target = os.path.join(self.package_path, "scripts/deploy.sh")
         chmodX(target)
         index = str(self.index)
@@ -583,8 +582,8 @@ class Deployer(Workers):
         new_syscalls.extend(dependent_syscalls)
         new_syscalls.extend(critical_syscalls)
         new_syscalls = utilities.unique(new_syscalls)
-        # Filter out $auto syscalls for ARM64 (they are x86-specific, generated by syz-sysgen)
-        if self.arch == "arm64":
+        # Filter out $auto syscalls for ARM64/RISCV64 (they are x86-specific, generated by syz-sysgen)
+        if self.arch in ("arm64", "riscv64"):
             new_syscalls = [s for s in new_syscalls if "$auto" not in s]
         enable_syscalls = "\"" + "\",\n\t\"".join(new_syscalls) + "\""
 
@@ -604,11 +603,10 @@ class Deployer(Workers):
         sshkey_file_path = os.path.join(self.image_path, cfg["image_key_filename"])
         kernel_img_file_path = os.path.join(self.kernel_path, cfg["kernel_path"])
 
-        # Generate VM cmdline for systemd timeout params (needed for ARM64 TCG)
+        # Pass all kernel boot params to syzkaller VM cmdline
         vm_cmdline_parts = []
         for param in cfg.get("kernel_boot_params", []):
-            if param.startswith("systemd."):
-                vm_cmdline_parts.append(param)
+            vm_cmdline_parts.append(param)
         vm_cmdline = " ".join(vm_cmdline_parts)
 
         # Build qemu_args for ARM64 (TCG mode needs specific options)
@@ -657,8 +655,8 @@ class Deployer(Workers):
         new_syscalls.extend(raw_syscalls)
         new_syscalls.extend(critical_syscalls)
         new_syscalls = utilities.unique(new_syscalls)
-        # Filter out $auto syscalls for ARM64 (they are x86-specific, generated by syz-sysgen)
-        if self.arch == "arm64":
+        # Filter out $auto syscalls for ARM64/RISCV64 (they are x86-specific, generated by syz-sysgen)
+        if self.arch in ("arm64", "riscv64"):
             new_syscalls = [s for s in new_syscalls if "$auto" not in s]
         enable_syscalls = "\"" + "\",\n\t\"".join(new_syscalls) + "\""
 
@@ -816,6 +814,87 @@ class Deployer(Workers):
     def __save_error(self, hash_val):
         self.logger.info("case {} encounter an error. See log for details.".format(hash_val))
         self.__move_to_error()
+
+    def __download_kernel_assets_for_riscv64(self, case, hash_val):
+        """Download pre-built kernel Image and disk image from syzbot storage.
+
+        For riscv64, we skip kernel compilation entirely and use the pre-built
+        assets that syzbot stores alongside each crash report.  This avoids
+        needing a full RISC-V cross-compilation toolchain.
+
+        Downloads: kernel Image (arch/riscv/boot/Image), vmlinux, and
+        non-bootable disk image (rootfs).
+        """
+        import urllib.request
+
+        kernel_url = case.get("kernel_image_url")
+        vmlinux_url = case.get("vmlinux_url")
+        disk_url = case.get("disk_image_url")
+
+        if not kernel_url or not disk_url:
+            self.logger.warning("[riscv64] Missing asset URLs in case data; "
+                                "falling back to source build if possible")
+            return False
+
+        self.logger.info("[riscv64] Downloading kernel Image from syzbot storage...")
+        self.case_info_logger.info("[riscv64] Downloading kernel Image from syzbot storage...")
+
+        os.makedirs(self.image_path, exist_ok=True)
+        kernel_dir = os.path.join(self.kernel_path, "arch", "riscv", "boot")
+        os.makedirs(kernel_dir, exist_ok=True)
+
+        # Download kernel Image
+        image_xz = os.path.join(kernel_dir, "Image.xz")
+        image_path = os.path.join(kernel_dir, "Image")
+        try:
+            urllib.request.urlretrieve(kernel_url, image_xz)
+            self.logger.info("[riscv64] Downloaded Image.xz, decompressing...")
+            call(["xz", "-df", image_xz])
+            if not os.path.isfile(image_path):
+                self.logger.error("[riscv64] Failed to decompress kernel Image")
+                return False
+            self.logger.info("[riscv64] Kernel Image ready: {}".format(image_path))
+        except Exception as e:
+            self.logger.error("[riscv64] Failed to download kernel Image: {}".format(e))
+            return False
+
+        # Download disk image (rootfs)
+        disk_xz = os.path.join(self.image_path, "riscv64-disk.raw.xz")
+        disk_raw = os.path.join(self.image_path, "riscv64-disk.raw")
+        try:
+            urllib.request.urlretrieve(disk_url, disk_xz)
+            self.logger.info("[riscv64] Downloaded disk image, decompressing...")
+            call(["xz", "-df", disk_xz])
+            if not os.path.isfile(disk_raw):
+                self.logger.error("[riscv64] Failed to decompress disk image")
+                return False
+            self.logger.info("[riscv64] Disk image ready: {}".format(disk_raw))
+        except Exception as e:
+            self.logger.error("[riscv64] Failed to download disk image: {}".format(e))
+            return False
+
+        # Download vmlinux (optional, for debugging)
+        if vmlinux_url:
+            vmlinux_xz = os.path.join(self.kernel_path, "vmlinux.xz")
+            vmlinux_path = os.path.join(self.kernel_path, "vmlinux")
+            try:
+                urllib.request.urlretrieve(vmlinux_url, vmlinux_xz)
+                call(["xz", "-df", vmlinux_xz])
+                self.logger.info("[riscv64] vmlinux ready: {}".format(vmlinux_path))
+            except Exception as e:
+                self.logger.warning("[riscv64] Failed to download vmlinux (non-fatal): {}".format(e))
+
+        # Use standard syzkaller stretch SSH key for now
+        # (syzbot disk images are configured for SSH key auth)
+        src_key = os.path.join(self.project_path, "tools", "img", "stretch.img.key")
+        dst_key = os.path.join(self.image_path, "riscv64-disk.raw.key")
+        if os.path.isfile(src_key) and not os.path.isfile(dst_key):
+            shutil.copy2(src_key, dst_key)
+            os.chmod(dst_key, 0o600)
+
+        self.logger.info("[riscv64] All kernel assets downloaded successfully")
+        self.case_info_logger.info("[riscv64] All kernel assets downloaded successfully")
+        return True
 
     def __copy_crashes(self):
         crash_path = "{}/workdir/crashes".format(self.syzkaller_path)

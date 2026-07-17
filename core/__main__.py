@@ -123,7 +123,7 @@ def args_parse():
     parser.add_argument('--install-requirements', action='store_true',
                         help='Install required packages and compile essential tools')
     parser.add_argument('--arch', nargs='?', default=None,
-                        choices=['amd64', 'arm64', '386'],
+                        choices=['amd64', 'arm64', '386', 'riscv64'],
                         help='Override architecture detection (amd64, arm64, 386)')
 
     args = parser.parse_args()

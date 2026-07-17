@@ -242,3 +242,62 @@
 2026-06-19 18:55:28,347 INFO case:247ac87 deploy done!
 2026-06-19 18:55:36,362 INFO case queue is empty!
 2026-06-19 18:55:36,362 INFO Thread 0 exit->
+2026-06-26 16:35:26,677 INFO case:9ba7a8c deploy start...
+2026-06-26 16:35:26,678 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-06-26 16:49:35,628 INFO case:9ba7a8c deploy done!
+2026-06-26 16:49:43,668 INFO case queue is empty!
+2026-06-26 16:49:43,668 INFO Thread 0 exit->
+2026-06-26 18:13:30,569 INFO case:9ba7a8c deploy start...
+2026-06-26 18:13:30,570 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-06-26 18:28:01,438 INFO case:9ba7a8c deploy start...
+2026-06-26 18:28:01,439 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-06-26 18:29:50,664 INFO case:9ba7a8c deploy start...
+2026-06-26 18:29:50,665 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-06-26 18:30:03,610 INFO case:9ba7a8c deploy start...
+2026-06-26 18:30:03,610 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-06-26 18:37:44,941 INFO case:9ba7a8c deploy done!
+2026-06-26 18:37:52,947 INFO case queue is empty!
+2026-06-26 18:37:52,947 INFO Thread 0 exit->
+2026-06-26 18:37:53,090 INFO case:9ba7a8c deploy done!
+2026-06-26 18:38:01,096 INFO case queue is empty!
+2026-06-26 18:38:01,096 INFO Thread 0 exit->
+2026-06-26 18:42:04,034 INFO case:9ba7a8c deploy start...
+2026-06-26 18:42:04,035 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-06-26 18:59:50,029 INFO case:9ba7a8c deploy start...
+2026-06-26 18:59:50,029 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-06-26 19:31:45,790 INFO case:9ba7a8c deploy start...
+2026-06-26 19:31:45,797 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-07-02 10:19:48,854 INFO case:9ba7a8c deploy start...
+2026-07-02 10:19:48,868 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-07-02 11:08:02,633 INFO case:9ba7a8c deploy done!
+2026-07-02 11:08:10,643 INFO case queue is empty!
+2026-07-02 11:08:10,643 INFO Thread 0 exit->
+2026-07-02 11:09:25,527 INFO case:9ba7a8c deploy start...
+2026-07-02 11:09:25,527 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-07-02 11:59:37,314 INFO case:9ba7a8c deploy done!
+2026-07-02 11:59:45,333 INFO case queue is empty!
+2026-07-02 11:59:45,333 INFO Thread 0 exit->
+2026-07-02 16:28:07,490 INFO case:9ba7a8c deploy start...
+2026-07-02 16:28:07,491 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-07-02 17:10:17,788 INFO case:9ba7a8c deploy start...
+2026-07-02 17:10:17,789 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-07-02 17:22:09,724 INFO case:9ba7a8c deploy start...
+2026-07-02 17:22:09,725 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-07-02 17:36:29,670 INFO case:9ba7a8c deploy done!
+2026-07-02 17:36:37,677 INFO case queue is empty!
+2026-07-02 17:36:37,677 INFO Thread 0 exit->
+2026-07-02 19:00:21,279 INFO case:9ba7a8c deploy start...
+2026-07-02 19:00:21,280 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-07-07 17:56:41,722 INFO case:9ba7a8c deploy start...
+2026-07-07 17:56:41,722 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-07-07 18:06:21,712 INFO case:9ba7a8c deploy done!
+2026-07-07 18:06:33,722 INFO case:9ba7a8c deploy start...
+2026-07-07 18:06:33,723 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-07-07 18:08:47,093 INFO case:9ba7a8c deploy done!
+2026-07-07 18:08:55,100 INFO case queue is empty!
+2026-07-07 18:08:55,100 INFO Thread 0 exit->
+2026-07-07 18:28:18,401 INFO case:9ba7a8c deploy start...
+2026-07-07 18:28:18,402 INFO Thread 0: run case 9ba7a8cdae0440edd57b [0/1] left
+2026-07-08 18:39:44,619 INFO case:9ba7a8c deploy done!
+2026-07-08 18:39:52,626 INFO case queue is empty!
+2026-07-08 18:39:52,626 INFO Thread 0 exit->

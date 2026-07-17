@@ -62,6 +62,10 @@ if [ "$ARCH" = "arm64" ]; then
   COMPILER=$4/tools/aarch64-gcc/bin/aarch64-linux-gnu-gcc
   CROSS_COMPILE="aarch64-linux-gnu-"
   MAKE_ARCH="ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE"
+elif [ "$ARCH" = "riscv64" ]; then
+  # riscv64 uses pre-built kernel from syzbot storage, skip compilation
+  echo "[deploy_linux.sh] riscv64: using pre-built kernel, skipping compilation"
+  exit 0
 else
   echo "Compiler: "$COMPILER_VERSION | grep gcc && \
   COMPILER=$4/tools/$COMPILER_VERSION/bin/gcc || \

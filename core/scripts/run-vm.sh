@@ -24,6 +24,18 @@ if [ "$ARCH" = "arm64" ]; then
     -drive file=$IMAGE,format=raw \
     -kernel $LINUX/arch/arm64/boot/Image \
     -append "console=ttyAMA0 net.ifnames=0 root=/dev/vda earlycon=pl011,mmio32,0x09000000"
+elif [ "$ARCH" = "riscv64" ]; then
+  qemu-system-riscv64 \
+    -machine virt \
+    -cpu rv64 \
+    -m 2G \
+    -smp 2 \
+    -netdev user,id=net0,host=10.0.2.10,hostfwd=tcp::$PORT-:22 \
+    -device virtio-net-pci,netdev=net0 \
+    -display none -serial stdio -no-reboot \
+    -drive file=$IMAGE,format=raw \
+    -kernel $LINUX/arch/riscv/boot/Image \
+    -append "console=ttyS0 net.ifnames=0 root=/dev/vda earlycon=sbi"
 else
   qemu-system-x86_64 \
     -m 2G \

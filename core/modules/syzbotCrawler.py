@@ -17,8 +17,9 @@ report_dir = "{}/work/cases_report/".format(os.getcwd())
 class Crawler:
     def __init__(self,
                     url="https://syzkaller.appspot.com/upstream/fixed",
-                    keyword=[''], max_retrieve=10, deduplicate=[''], ignore_batch=[], filter_by_reported=-1, 
-                    filter_by_closed=-1, sleeptime=5, include_high_risk=False, debug=False):
+                    keyword=[''], max_retrieve=10, deduplicate=[''], ignore_batch=[], filter_by_reported=-1,
+                    filter_by_closed=-1, sleeptime=5, include_high_risk=False, debug=False,
+                    arch_regex=None):
         self.url = url
         self.sleeptime = sleeptime
         if type(keyword) == list:
@@ -40,6 +41,7 @@ class Crawler:
         self.init_logger(debug)
         self.filter_by_reported = filter_by_reported
         self.filter_by_closed = filter_by_closed
+        self.arch_regex = arch_regex
         self.temp_syzbot_bug_base_url = ""
         
         os.makedirs(report_dir, exist_ok=True)
@@ -72,7 +74,7 @@ class Crawler:
                     self.cases[each['Hash']]["host_url"] = syzbot_host_url + syzbot_bug_base_url + each['Hash']
                     self.logger2file.info("[Success] save_case:{} down".format(each['Hash']))
                 else:
-                    if self.retreive_case(each['Hash'],AllCase) != -1:
+                    if self.retreive_case(each['Hash'], AllCase, arch_regex=self.arch_regex) != -1:
                         self.cases[each['Hash']]['title'] = each['Title']
                         if 'Patch' in each:
                             self.cases[each['Hash']]['patch'] = each['Patch']
@@ -104,7 +106,7 @@ class Crawler:
                         if commit in self.patches or (commit in high_risk_impacts and not self.include_high_risk):
                             continue
                         self.patches[commit] = True
-                    if self.retreive_case(each['Hash'],AllCase) != -1:
+                    if self.retreive_case(each['Hash'], AllCase, arch_regex=self.arch_regex) != -1:
                         self.cases[each['Hash']]['title'] = each['Title']
                         if 'Patch' in each:
                             self.cases[each['Hash']]['patch'] = each['Patch']
@@ -114,7 +116,7 @@ class Crawler:
 
     def run_one_case(self, hash, AllCase):
         self.logger.info("retreive one case: %s",hash)
-        if self.retreive_case(hash, AllCase) == -1:
+        if self.retreive_case(hash, AllCase, arch_regex=self.arch_regex) == -1:
             return
         self.cases[hash]['title'] = self.get_title_of_case(hash)
         patch = self.get_patch_of_case(hash)
@@ -151,9 +153,9 @@ class Crawler:
         return patch
 
 
-    def retreive_case(self, hash, AllCase):
+    def retreive_case(self, hash, AllCase, arch_regex=None):
         self.cases[hash] = {}
-        detail,self.temp_syzbot_bug_base_url = self.request_detail(hash, AllCase)
+        detail,self.temp_syzbot_bug_base_url = self.request_detail(hash, AllCase, arch_regex=arch_regex)
         if len(detail) < num_of_elements:
             self.logger.error("Failed to get detail of a case {}{}{}".format(syzbot_host_url, self.temp_syzbot_bug_base_url, hash))
             self.cases.pop(hash)
@@ -170,6 +172,11 @@ class Crawler:
         self.cases[hash]["vul_offset"] = detail[9]
         self.cases[hash]["obj_size"] = detail[10]
         self.cases[hash]["host_url"] = detail[11]
+        # Asset URLs from syzbot storage (newer syzbot pages, may be None for older cases)
+        if len(detail) > 12:
+            self.cases[hash]["disk_image_url"] = detail[12]
+            self.cases[hash]["vmlinux_url"] = detail[13]
+            self.cases[hash]["kernel_image_url"] = detail[14]
 
     def gather_cases(self,OnlyTitle=False):
         high_risk_impacts = {}
@@ -257,7 +264,7 @@ class Crawler:
                         count += 1
         return res, high_risk_impacts
 
-    def request_detail(self, hash, AllCase, index=1):
+    def request_detail(self, hash, AllCase, index=1, arch_regex=None):
         self.logger.info("\nDetail: {}{}{}".format(syzbot_host_url, syzbot_bug_base_url, hash))
         url = syzbot_host_url + syzbot_bug_base_url + hash
         tables = self.__get_table(url)
@@ -276,6 +283,100 @@ class Crawler:
         count = 0
         for table in tables:
             if table.text.find('Crash') != -1:
+
+                # --- Two-pass scan when arch_regex is set ---
+                # riscv64 crash entries often lack syz_repro; reproducers are
+                # cross-architecture.  First pass: find reproducer from *any*
+                # architecture.  Second pass: grab arch-specific data (commit,
+                # syzkaller, assets) from the entry matching arch_regex.
+                if arch_regex:
+                    repro_data = None   # (syz_repro, c_repro, log, report, config, offset, size, manager)
+                    arch_data = None    # (commit, syzkaller, disk_image_url, vmlinux_url, kernel_image_url, manager, time)
+
+                    for case in table.tbody.contents:
+                        if type(case) != element.Tag:
+                            continue
+                        _mgr = case.find('td', {"class": "manager"})
+                        _mgr_text = _mgr.text.strip() if _mgr else ""
+
+                        # --- first pass: collect reproducer from any arch ---
+                        if repro_data is None:
+                            _tags = case.find_all('td', {"class": "tag"})
+                            _repros = case.find_all('td', {"class": "repro"})
+                            if len(_repros) >= 4:
+                                try:
+                                    _syz_repro = syzbot_host_url + _repros[2].find('a')['href']
+                                    _c_repro = _repros[3].find('a')
+                                    _c_repro = syzbot_host_url + _c_repro['href'] if _c_repro else None
+                                    _log = syzbot_host_url + _repros[0].find('a')['href']
+                                    _report = syzbot_host_url + _repros[1].find('a')['href']
+                                    _config = syzbot_host_url + case.find('td', {"class": "config"}).next.attrs['href']
+                                    repro_data = (_syz_repro, _c_repro, _log, _report, _config, _mgr_text,
+                                                  _tags, _repros)
+                                    self.logger.info("two-pass: found reproducer from manager '{}'".format(_mgr_text[:60]))
+                                except:
+                                    pass
+
+                        # --- second pass: collect arch-specific data ---
+                        if arch_data is None and re.search(arch_regex, _mgr_text, re.IGNORECASE):
+                            try:
+                                _tags_a = case.find_all('td', {"class": "tag"})
+                                _m_commit = re.search(r'id=([0-9a-z]*)', _tags_a[0].next.attrs['href'])
+                                _commit = _m_commit.groups()[0]
+                                _m_syz = re.search(r'commits\/([0-9a-z]*)', _tags_a[1].next.attrs['href'])
+                                _syzkaller = _m_syz.groups()[0]
+                                _time = case.find('td', {"class": "time"})
+                                _time_str = _time.text if _time else ""
+                                # Extract asset URLs
+                                _disk_url = None; _vmlinux_url = None; _kernel_url = None
+                                try:
+                                    _assets_td = case.find('td', {"class": "assets"})
+                                    if _assets_td:
+                                        for _link in _assets_td.find_all('a'):
+                                            _href = _link.get('href', '')
+                                            _txt = _link.text.strip().lower()
+                                            if 'vmlinux' in _txt:
+                                                _vmlinux_url = _href
+                                            elif 'disk' in _txt or 'non_bootable' in _txt:
+                                                _disk_url = _href
+                                            elif 'kernel' in _txt or 'image' in _txt:
+                                                _kernel_url = _href
+                                except:
+                                    pass
+                                arch_data = (_commit, _syzkaller, _disk_url, _vmlinux_url, _kernel_url,
+                                             _mgr_text, _time_str)
+                                self.logger.info("two-pass: found arch data from manager '{}'".format(_mgr_text[:60]))
+                            except:
+                                pass
+
+                        if repro_data is not None and arch_data is not None:
+                            break
+
+                    if repro_data is not None and arch_data is not None:
+                        (_syz_repro, _c_repro, _log, _report, _config, _repro_mgr, _tags, _repros) = repro_data
+                        (_commit, _syzkaller, _disk_url, _vmlinux_url, _kernel_url,
+                         _arch_mgr, _time_str) = arch_data
+
+                        # Fetch report to extract vul offset/size
+                        try:
+                            r = request_get(_report)
+                            with open("{}/{}_report.txt".format(report_dir, hash), 'w') as f:
+                                f.write(r.text)
+                            report_list = r.text.split('\n')
+                            offset, size, _ = extract_vul_obj_offset_and_size(report_list)
+                        except:
+                            offset, size = None, None
+
+                        return [_commit, _syzkaller, _config, _syz_repro, _log, _c_repro,
+                                _time_str, _arch_mgr, _report, offset, size, url,
+                                _disk_url, _vmlinux_url, _kernel_url], self.temp_syzbot_bug_base_url
+
+                    # If we got here, could not find both reproducer and arch data
+                    self.logger2file.info("[Failed] {} fail to find a proper crash (repro={}, arch={})".format(
+                        url, repro_data is not None, arch_data is not None))
+                    return [], self.temp_syzbot_bug_base_url
+
+                # --- Original single-pass scan (no arch_regex) ---
                 for case in table.tbody.contents:
                     if type(case) == element.Tag:
                         if not AllCase:
@@ -286,6 +387,16 @@ class Crawler:
                             count += 1
                             if count < index:
                                 continue
+                        # Architecture filtering: skip crash entries whose manager
+                        # doesn't match the requested architecture (e.g. riscv64).
+                        if arch_regex:
+                            _mgr = case.find('td', {"class": "manager"})
+                            _mgr_text = _mgr.text.strip() if _mgr else ""
+                            if not re.search(arch_regex, _mgr_text, re.IGNORECASE):
+                                self.logger.info("skip arch (manager '{}' !~ {})".format(
+                                    _mgr_text[:60], arch_regex))
+                                continue
+                            self.logger.info("arch MATCH: manager '{}'".format(_mgr_text[:60]))
                         try:
                             manager = case.find('td', {"class": "manager"})
                             manager_str = manager.text
@@ -320,6 +431,10 @@ class Crawler:
                                 self.logger.info(
                                     "Repro is missing. Failed to retrieve case {}{}{}".format(syzbot_host_url, self.temp_syzbot_bug_base_url, hash))
                                 self.logger2file.info("[Failed] {} Repro is missing".format(url))
+                                # If filtering by architecture, keep searching other crash entries.
+                                # The riscv64 entry may lack a repro, but another riscv64 entry might have one.
+                                if arch_regex:
+                                    continue
                                 break
                             try:
                                 c_repro = syzbot_host_url + repros[3].find('a')['href']
@@ -330,7 +445,27 @@ class Crawler:
                         except:
                             self.logger.info("Failed to retrieve case {}{}{}".format(syzbot_host_url, self.temp_syzbot_bug_base_url, hash))
                             continue
-                        return [commit, syzkaller, config, syz_repro, log, c_repro, time_str, manager_str, report, offset, size, url],self.temp_syzbot_bug_base_url  
+                        # Extract asset URLs from the Assets column (newer syzbot pages)
+                        disk_image_url = None
+                        vmlinux_url = None
+                        kernel_image_url = None
+                        try:
+                            assets_td = case.find('td', {"class": "assets"})
+                            if assets_td:
+                                asset_links = assets_td.find_all('a')
+                                for link in asset_links:
+                                    href = link.get('href', '')
+                                    text = link.text.strip().lower()
+                                    if 'vmlinux' in text:
+                                        vmlinux_url = href
+                                    elif 'disk' in text or 'non_bootable' in text:
+                                        disk_image_url = href
+                                    elif 'kernel' in text or 'image' in text:
+                                        kernel_image_url = href
+                        except:
+                            pass
+                        return [commit, syzkaller, config, syz_repro, log, c_repro, time_str, manager_str, report, offset, size, url,
+                                disk_image_url, vmlinux_url, kernel_image_url],self.temp_syzbot_bug_base_url
                 break
         self.logger2file.info("[Failed] {} fail to find a proper crash".format(url))
         return [],self.temp_syzbot_bug_base_url

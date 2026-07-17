@@ -87,6 +87,10 @@ if [ "$ARCH" = "arm64" ]; then
   COMPILER=$PROJECT_PATH/tools/aarch64-gcc/bin/aarch64-linux-gnu-gcc
   CROSS_COMPILE="aarch64-linux-gnu-"
   MAKE_ARCH="ARCH=arm64 CROSS_COMPILE=$CROSS_COMPILE"
+elif [ "$ARCH" = "riscv64" ]; then
+  COMPILER=$PROJECT_PATH/tools/riscv64-gcc/bin/riscv64-linux-gnu-gcc
+  CROSS_COMPILE="riscv64-linux-gnu-"
+  MAKE_ARCH="ARCH=riscv CROSS_COMPILE=$CROSS_COMPILE"
 else
   echo "Compiler: "$COMPILER_VERSION | grep gcc && \
   COMPILER=$PROJECT_PATH/tools/$COMPILER_VERSION/bin/gcc || \
@@ -117,9 +121,11 @@ export GOROOT=$PROJECT_PATH/tools/goroot
 export LLVM_BIN=$PROJECT_PATH/tools/llvm/build/bin
 export PATH=$GOROOT/bin:$LLVM_BIN:$PATH
 
-# Add cross-compiler to PATH for syzkaller executor build (arm64)
+# Add cross-compiler to PATH for syzkaller executor build (arm64 / riscv64)
 if [ "$ARCH" = "arm64" ]; then
   export PATH=$PROJECT_PATH/tools/aarch64-gcc/bin:$PATH
+elif [ "$ARCH" = "riscv64" ]; then
+  export PATH=$PROJECT_PATH/tools/riscv64-gcc/bin:$PATH
 fi
 echo "[+] Downloading golang"
 go version || build_golang
@@ -234,6 +240,23 @@ TCIEOF
     ln -sf linux_arm64/syz-executor syz-executor
     ln -sf linux_arm64/syz-stress syz-stress
     cd ..
+  elif [ "$ARCH" = "riscv64" ]; then
+    # RISC-V 64: syz-fuzzer/syz-execprog run inside the VM (like ARM64)
+    mkdir -p pkg/flatrpc
+    git show HEAD:pkg/flatrpc/flatrpc.h > pkg/flatrpc/flatrpc.h 2>/dev/null && \
+      echo "[deploy.sh] Extracted flatrpc.h from git" || \
+      echo "[deploy.sh] WARNING: could not extract flatrpc.h"
+    git show HEAD:pkg/flatrpc/flatrpc.go > pkg/flatrpc/flatrpc.go 2>/dev/null && \
+      echo "[deploy.sh] Extracted flatrpc.go from git" || \
+      echo "[deploy.sh] WARNING: could not extract flatrpc.go"
+    make TARGETARCH=riscv64 TARGETVMARCH=riscv64
+    # Create symlinks so syz-manager finds riscv64 binaries in bin/
+    cd bin
+    ln -sf linux_riscv64/syz-fuzzer syz-fuzzer
+    ln -sf linux_riscv64/syz-execprog syz-execprog
+    ln -sf linux_riscv64/syz-executor syz-executor
+    ln -sf linux_riscv64/syz-stress syz-stress
+    cd ..
   else
     make TARGETARCH=$ARCH TARGETVMARCH=amd64
   fi
@@ -260,6 +283,18 @@ if [ "$ARCH" = "arm64" ]; then
   if [ ! -L "$CASE_PATH/img/arm64-trixie.img.key" ]; then
     ln -s $PROJECT_PATH/tools/img/$IMAGE.img.key ./arm64-trixie.img.key
   fi
+# riscv64 images are pre-downloaded by deploy.py from syzbot storage
+elif [ "$ARCH" = "riscv64" ]; then
+  if [ ! -f "$CASE_PATH/img/riscv64-disk.raw" ] && [ ! -L "$CASE_PATH/img/riscv64-disk.raw" ]; then
+    ln -s $PROJECT_PATH/tools/img/$IMAGE.raw ./riscv64-disk.raw
+  else
+    echo "[deploy.sh] riscv64 disk image already present, skip symlink"
+  fi
+  if [ ! -f "$CASE_PATH/img/riscv64-disk.raw.key" ] && [ ! -L "$CASE_PATH/img/riscv64-disk.raw.key" ]; then
+    ln -s $PROJECT_PATH/tools/img/$IMAGE.raw.key ./riscv64-disk.raw.key
+  else
+    echo "[deploy.sh] riscv64 SSH key already present, skip symlink"
+  fi
 else
   if [ ! -L "$CASE_PATH/img/stretch.img" ]; then
     ln -s $PROJECT_PATH/tools/img/$IMAGE.img ./stretch.img
@@ -271,6 +306,23 @@ fi
 cd ..
 
 echo "[+] Building kernel"
+# riscv64: kernel Image is pre-downloaded from syzbot storage by deploy.py
+if [ "$ARCH" = "riscv64" ]; then
+  echo "[deploy.sh] riscv64: skipping kernel build (pre-built Image from syzbot)"
+  # Ensure linux symlink exists (for arch/riscv/boot/Image path)
+  if [ ! -L "$CASE_PATH/linux" ]; then
+    echo "[deploy.sh] WARNING: linux symlink missing, kernel Image path may be wrong"
+  fi
+  # Verify kernel Image exists
+  if [ -f "$CASE_PATH/linux/arch/riscv/boot/Image" ]; then
+    echo "[deploy.sh] Kernel Image found, skipping build"
+    exit 0
+  else
+    echo "[deploy.sh] WARNING: Kernel Image not found at expected path"
+    # Don't exit with error - might still work with QEMU -kernel from elsewhere
+    exit 0
+  fi
+fi
 OLD_INDEX=`ls -l linux | cut -d'-' -f 3`
 if [ "$OLD_INDEX" != "$INDEX" ]; then
   rm -rf "./linux" || echo "No linux repo"

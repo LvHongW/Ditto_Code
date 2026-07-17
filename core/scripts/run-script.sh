@@ -16,6 +16,8 @@ ARCH=$5
 # Determine SSH key based on architecture
 if [ "$ARCH" = "arm64" ]; then
     SSH_KEY="$IMAGE_PATH/arm64-trixie.img.key"
+elif [ "$ARCH" = "riscv64" ]; then
+    SSH_KEY="$IMAGE_PATH/riscv64-disk.raw.key"
 else
     SSH_KEY="$IMAGE_PATH/stretch.img.key"
 fi

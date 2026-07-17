@@ -40,6 +40,14 @@ arm64_kasan_pattern3 = "Call trace:\n([\s\S]*?)\n==="
 arm64_warn  = "([\s\S]*?)Call trace:\n([\s\S]*?)(Kernel Offset|Modules linked in)"
 arm64_pattern3 = "Call trace:\n([\s\S]*?)\n(Modules linked in| ret_from_fork)"
 
+# RISC-V 64 crash patterns (same "Call Trace:" format as x86, no RIP register)
+riscv64_kasan_pattern = "Call Trace:\n([\s\S]*?)\n(Allocated by task|===)"
+riscv64_kasan_pattern2 = "Call Trace:\n([\s\S]*?)\nAllocated by task"
+riscv64_kasan_pattern3 = "Call Trace:\n([\s\S]*?)\n==="
+
+riscv64_warn = "([\s\S]*?)Call Trace:\n([\s\S]*?)(Kernel Offset|Modules linked in)"
+riscv64_pattern3 = "Call Trace:\n([\s\S]*?)\n(Modules linked in| ret_from_fork)"
+
 class Workers(Case):
     def __init__(self, index, parallel_max, debug=False, force=False, port=53777, replay='incomplete', linux_index=-1, time=8, key_syscall=None, kernel_fuzzing=False, reproduce=False, alert=[], gdb_port=1235, qemu_monitor_port=9700, max_compiling_kernel=-1, store_read=True):
         Case.__init__(self, index, parallel_max, debug, force, port, replay, linux_index, time, key_syscall, kernel_fuzzing, reproduce, alert, gdb_port, qemu_monitor_port, max_compiling_kernel, store_read)
@@ -57,6 +65,8 @@ class Workers(Case):
     def get_calls(self, report, arch='amd64'):
         if arch == 'arm64':
             return self._get_calls_arm64(report)
+        if arch == 'riscv64':
+            return self._get_calls_riscv64(report)
         return self._get_calls_x86(report)
 
     def _get_calls_x86(self, report):
@@ -107,6 +117,33 @@ class Workers(Case):
             if found:
                 return found.group(1)
         found = self.get_call_trace(arm64_pattern3, report)
+        if found:
+            return found.group(1)
+        return ""
+
+    def _get_calls_riscv64(self, report):
+        """Extract call trace from RISC-V 64 crash report.
+
+        RISC-V uses "Call Trace:" (same as x86, unlike arm64 "Call trace:").
+        KASAN patterns match x86 behavior; WARNING/BUG use riscv64-specific
+        patterns that don't reference x86 registers (RIP/RSP/R13).
+        """
+        if "WARNING" in report or "kernel BUG at" in report \
+                or "BUG: unable to handle" in report:
+            found = self.get_call_trace(riscv64_warn, report)
+            if found:
+                return found.group(1)+found.group(2)
+        elif "kasan" in report:
+            found = self.get_call_trace(riscv64_kasan_pattern, report)
+            if found:
+                return found.group(1)
+            found = self.get_call_trace(riscv64_kasan_pattern2, report)
+            if found:
+                return found.group(1)
+            found = self.get_call_trace(riscv64_kasan_pattern3, report)
+            if found:
+                return found.group(1)
+        found = self.get_call_trace(riscv64_pattern3, report)
         if found:
             return found.group(1)
         return ""

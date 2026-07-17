@@ -27,6 +27,8 @@ fi
 rm -f CorrectTemplate
 if [ "$ARCH" = "arm64" ]; then
   make TARGETARCH=$ARCH TARGETVMARCH=arm64 || exit 1
+elif [ "$ARCH" = "riscv64" ]; then
+  make TARGETARCH=$ARCH TARGETVMARCH=riscv64 || exit 1
 else
   make TARGETARCH=$ARCH TARGETVMARCH=amd64 || exit 1
 fi

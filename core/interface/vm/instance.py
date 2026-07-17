@@ -85,7 +85,7 @@ class VMInstance:
         # ARM64 uses -drive instead of -hda
         image_path = os.path.join(self.image, cfg["image_filename"])
         if cfg["qemu_use_drive"]:
-            self.cmd_launch.extend(["-drive", "file={},format=raw".format(image_path)])
+            self.cmd_launch.extend(["-drive", "file={},format=raw,if=virtio".format(image_path)])
         else:
             self.cmd_launch.extend(["-hda", image_path])
 

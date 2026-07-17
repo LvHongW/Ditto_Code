@@ -14,6 +14,16 @@ if [ ! -f "$(pwd)/tools/.stamp/SETUP_ARM64_PKGS" ]; then
   touch "$(pwd)/tools/.stamp/SETUP_ARM64_PKGS"
 fi
 
+# RISCV64 packages: separate stamp so they're installed even if ENV_SETUP already exists
+if [ ! -f "$(pwd)/tools/.stamp/SETUP_RISCV64_PKGS" ]; then
+  sudo apt-get -y install qemu-system-riscv64 qemu-user-static gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+  # Create symlink for cross-compiler
+  mkdir -p "$(pwd)/tools/riscv64-gcc/bin"
+  ln -sf $(which riscv64-linux-gnu-gcc) "$(pwd)/tools/riscv64-gcc/bin/riscv64-linux-gnu-gcc"
+  ln -sf $(which riscv64-linux-gnu-g++) "$(pwd)/tools/riscv64-gcc/bin/riscv64-linux-gnu-g++"
+  touch "$(pwd)/tools/.stamp/SETUP_RISCV64_PKGS"
+fi
+
 if [ ! -d "work/completed" ]; then
   mkdir -p work/completed
 fi

@@ -161,6 +161,82 @@ ARCH_CONFIG = {
         "ssh_connect_timeout": 30,  # SSH -o ConnectTimeout (TCG handshake is slow)
         "ssh_subprocess_timeout": 120,  # subprocess call() timeout (TCG crypto is slow)
     },
+    "riscv64": {
+        # syzkaller
+        "syz_target": "linux/riscv64",
+        "syz_targetarch": "riscv64",
+        "syz_targetvmarch": "amd64",
+
+        # QEMU
+        "qemu_binary": "qemu-system-riscv64",
+        "qemu_machine": "virt",
+        "qemu_cpu": "rv64",
+        "qemu_enable_kvm": False,  # TCG only on x86 host; set True on riscv64 host
+        "qemu_nic": "virtio-net-pci",
+        "qemu_root_dev": "/dev/vda",
+        "qemu_console": "ttyS0",
+        "qemu_use_drive": True,
+        "qemu_args": "-machine virt -cpu rv64",
+        "max_qemu": 1,  # TCG emulation is slow, limit to 1 VM
+
+        # kernel (pre-built images downloaded from syzbot storage)
+        "kernel_path": "arch/riscv/boot/Image",
+        "kernel_make_arch": "riscv",
+        "kernel_cross_compile": "riscv64-linux-gnu-",
+        "kernel_cross_compile_gcc": "riscv64-linux-gnu-gcc-12",
+        "kernel_boot_params": [
+            "kasan_multi_shot=1", "earlyprintk=serial", "oops=panic",
+            "panic=1", "ftrace_dump_on_oops=orig_cpu",
+            "net.ifnames=0", "biosdevname=0",
+            "earlycon=sbi",
+            "rcupdate.rcu_cpu_stall_suppress=1",
+        ],
+        "kernel_config_enable": [
+            "CONFIG_HAVE_ARCH_KASAN",
+            "CONFIG_KASAN",
+            "CONFIG_KASAN_GENERIC",
+            "CONFIG_KASAN_INLINE",
+            "CONFIG_DEBUG_INFO",
+            "CONFIG_FRAME_POINTER",
+            "CONFIG_CC_HAS_SANCOV_TRACE_PC",
+            "CONFIG_KCOV",
+            "CONFIG_KCOV_INSTRUMENT_ALL",
+            "CONFIG_KCOV_ENABLE_COMPARISONS",
+            "CONFIG_DEBUG_FS",
+            "CONFIG_DEBUG_KMEMLEAK",
+            "CONFIG_KALLSYMS",
+            "CONFIG_KALLSYMS_ALL",
+            "CONFIG_VIRTIO_BLK",
+            "CONFIG_VIRTIO_NET",
+            "CONFIG_VIRTIO_PCI",
+        ],
+        "kernel_config_disable": [
+            "CONFIG_BUG_ON_DATA_CORRUPTION",
+            "CONFIG_RANDOMIZE_BASE",
+            "CONFIG_PANIC_ON_OOPS",
+        ],
+
+        # image (downloaded from syzbot storage)
+        "image_filename": "riscv64-disk.raw",
+        "image_key_filename": "riscv64-disk.raw.key",
+
+        # VM boot detection (syzbot riscv64 images may not show full Debian banner)
+        "startup_regex": r'(?:Debian GNU/Linux.*(?:syzkaller ttyS)|syzkaller login:|Starting sshd)',
+
+        # crash / call trace (same "Call Trace:" format as x86, no RIP prefix)
+        "call_trace_ends": ["__riscv_sys_", "ret_from_fork", "bpf_prog_", "Allocated by"],
+        "crash_rip_prefix": None,  # RISC-V has no RIP register
+
+        # GDB/pwndbg (skip for riscv64)
+        "need_gdb": False,
+
+        # timeouts (TCG is slow similar to ARM64)
+        "qemu_boot_timeout": 480,
+        "ssh_ready_retries": 180,
+        "ssh_connect_timeout": 30,
+        "ssh_subprocess_timeout": 120,
+        "poc_crash_wait_timeout": 120,  # max wait for crash after PoC execution
+    },
     "386": None,  # will be copied from amd64 with overrides
 }
 
@@ -181,7 +257,7 @@ def detect_arch(manager_field):
         "ci-upstream-gce" -> "amd64"
         "ci-upstream-gce-386" -> "386"
         "ci-upstream-gce-arm64" -> "arm64"
-        "ci-upstream-gce-arm64-maybe" -> "arm64"
+        "ci-qemu2-riscv64" -> "riscv64"
     """
     if not manager_field:
         logger.debug("[arch_config] manager field is empty, defaulting to amd64")
@@ -193,6 +269,11 @@ def detect_arch(manager_field):
     if re.search(r'\barm64\b|\baarch64\b', manager):
         logger.debug("[arch_config] detected arm64 from manager: %s", manager_field)
         return "arm64"
+
+    # Check riscv64 (before 386, similar reason)
+    if re.search(r'\briscv64\b|\briscv\b', manager):
+        logger.debug("[arch_config] detected riscv64 from manager: %s", manager_field)
+        return "riscv64"
 
     # Check 386
     if re.search(r'\b386\b|\bi386\b', manager):
@@ -207,7 +288,7 @@ def get_arch_config(arch):
     """Return architecture configuration dictionary.
 
     Args:
-        arch: Architecture string ("amd64", "arm64", "386")
+        arch: Architecture string ("amd64", "arm64", "386", "riscv64")
 
     Returns:
         Dictionary with architecture-specific configuration values.
